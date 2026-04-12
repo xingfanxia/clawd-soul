@@ -227,6 +227,137 @@ routes['GET /mood'] = async (_req, res) => {
 };
 
 // ---------------------------------------------------------------------------
+// Pairing / multi-device
+// ---------------------------------------------------------------------------
+
+import crypto from 'node:crypto';
+import os from 'node:os';
+
+/** Generate a 6-digit pairing code (valid for 5 minutes) */
+let _pairingCode = null;
+let _pairingExpiry = 0;
+
+// POST /pair/generate — host generates a pairing code
+routes['POST /pair/generate'] = async (_req, res) => {
+  _pairingCode = String(Math.floor(100000 + Math.random() * 900000));
+  _pairingExpiry = Date.now() + 5 * 60 * 1000; // 5 min
+
+  json(res, { ok: true, code: _pairingCode, expiresIn: 300 });
+};
+
+// POST /pair/connect — client submits pairing code to get auth token
+routes['POST /pair/connect'] = async (req, res) => {
+  const body = await readBody(req);
+  if (!body?.code || !body?.deviceName) {
+    return json(res, { ok: false, error: 'Missing code or deviceName' }, 400);
+  }
+
+  if (!_pairingCode || Date.now() > _pairingExpiry) {
+    return json(res, { ok: false, error: 'No active pairing code or code expired' }, 403);
+  }
+
+  if (body.code !== _pairingCode) {
+    return json(res, { ok: false, error: 'Invalid pairing code' }, 403);
+  }
+
+  // Pairing successful — generate auth token if not exists
+  const cfg = config.get();
+  if (!cfg.authToken) {
+    cfg.authToken = crypto.randomBytes(32).toString('hex');
+    config.save();
+  }
+
+  // Register device
+  const devices = cfg.pairedDevices || [];
+  const existing = devices.find((d) => d.name === body.deviceName);
+  if (!existing) {
+    devices.push({ name: body.deviceName, pairedAt: new Date().toISOString() });
+    config.update({ pairedDevices: devices });
+  }
+
+  // Clear pairing code (single use)
+  _pairingCode = null;
+  _pairingExpiry = 0;
+
+  json(res, {
+    ok: true,
+    authToken: cfg.authToken,
+    soulName: soul.get().name,
+    message: `Paired with ${body.deviceName}!`,
+  });
+};
+
+// GET /pair/status — check pairing status and LAN info
+routes['GET /pair/status'] = async (_req, res) => {
+  const cfg = config.get();
+  const addresses = [];
+  const nets = os.networkInterfaces();
+  for (const iface of Object.values(nets)) {
+    for (const addr of iface) {
+      if (addr.family === 'IPv4' && !addr.internal) {
+        addresses.push(addr.address);
+      }
+    }
+  }
+
+  json(res, {
+    ok: true,
+    networkMode: cfg.networkMode,
+    lanAddresses: addresses,
+    pairedDevices: cfg.pairedDevices || [],
+    hasPendingCode: !!_pairingCode && Date.now() < _pairingExpiry,
+  });
+};
+
+// POST /pair/enable-lan — switch to LAN mode
+routes['POST /pair/enable-lan'] = async (_req, res) => {
+  const cfg = config.get();
+  if (!cfg.authToken) {
+    cfg.authToken = crypto.randomBytes(32).toString('hex');
+  }
+  config.update({ networkMode: 'lan', authToken: cfg.authToken });
+
+  json(res, {
+    ok: true,
+    networkMode: 'lan',
+    message: 'LAN mode enabled. Restart soul server to apply. Use POST /pair/generate to create a pairing code.',
+  });
+};
+
+// POST /pair/disable-lan — switch back to local mode
+routes['POST /pair/disable-lan'] = async (_req, res) => {
+  config.update({ networkMode: 'local' });
+  json(res, { ok: true, networkMode: 'local', message: 'Local mode enabled. Restart soul server to apply.' });
+};
+
+// ---------------------------------------------------------------------------
+// Auth middleware
+// ---------------------------------------------------------------------------
+
+function isLocalRequest(req) {
+  const ip = req.socket.remoteAddress;
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+function checkAuth(req) {
+  // Local requests always allowed (same machine)
+  if (isLocalRequest(req)) return true;
+
+  // Remote requests need auth token in LAN mode
+  const cfg = config.get();
+  if (cfg.networkMode !== 'lan') return false; // not in LAN mode, reject remote
+
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !cfg.authToken) return false;
+
+  const token = authHeader.replace(/^Bearer\s+/i, '');
+  return token === cfg.authToken;
+}
+
+// Public routes (no auth needed) — pairing endpoints
+const PUBLIC_ROUTES = new Set(['POST /pair/connect', 'GET /health']);
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 function route(req, res) {
@@ -235,7 +366,7 @@ function route(req, res) {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     });
     res.end();
     return;
@@ -243,6 +374,12 @@ function route(req, res) {
 
   const url = new URL(req.url, `http://${req.headers.host}`);
   const routeKey = `${req.method} ${url.pathname}`;
+
+  // Auth check for non-public routes
+  if (!PUBLIC_ROUTES.has(routeKey) && !checkAuth(req)) {
+    json(res, { ok: false, error: 'Unauthorized' }, 401);
+    return;
+  }
 
   const handler = routes[routeKey];
   if (handler) {
@@ -261,24 +398,38 @@ function route(req, res) {
 const PORT_START = 23456;
 const PORT_END = 23460;
 
-function tryListen(server, port) {
+function tryListen(server, port, bindAddress) {
   return new Promise((resolve) => {
     server.once('error', (err) => {
       if (err.code === 'EADDRINUSE') resolve(false);
       else resolve(false);
     });
-    server.listen(port, '127.0.0.1', () => resolve(true));
+    server.listen(port, bindAddress, () => resolve(true));
   });
 }
 
 // ---------------------------------------------------------------------------
 // Runtime file (for clawd-on-desk to discover the server)
 // ---------------------------------------------------------------------------
-function writeRuntime(port) {
+function writeRuntime(port, bindAddress) {
   const runtimePath = path.join(config.DATA_DIR, 'soul-runtime.json');
+  const lanAddresses = [];
+  if (bindAddress === '0.0.0.0') {
+    const nets = os.networkInterfaces();
+    for (const iface of Object.values(nets)) {
+      for (const addr of iface) {
+        if (addr.family === 'IPv4' && !addr.internal) {
+          lanAddresses.push(addr.address);
+        }
+      }
+    }
+  }
   fs.writeFileSync(runtimePath, JSON.stringify({
     port,
     pid: process.pid,
+    bindAddress,
+    lanAddresses,
+    networkMode: config.get().networkMode,
     startedAt: new Date().toISOString(),
   }, null, 2), 'utf8');
 }
@@ -331,19 +482,33 @@ async function main() {
   // Create HTTP server
   const server = http.createServer(route);
 
+  // Determine bind address based on network mode
+  const bindAddress = config.get().networkMode === 'lan' ? '0.0.0.0' : '127.0.0.1';
+
   // Find available port
   let port = PORT_START;
   for (let p = PORT_START; p <= PORT_END; p++) {
-    if (await tryListen(server, p)) {
+    if (await tryListen(server, p, bindAddress)) {
       port = p;
       break;
     }
   }
 
-  // Write runtime file
-  writeRuntime(port);
+  // Write runtime file (includes LAN addresses if in LAN mode)
+  writeRuntime(port, bindAddress);
 
-  console.log(`[clawd-soul] listening on http://127.0.0.1:${port}`);
+  console.log(`[clawd-soul] listening on http://${bindAddress}:${port}`);
+  if (bindAddress === '0.0.0.0') {
+    console.log(`[clawd-soul] LAN mode enabled — remote devices can connect with auth token`);
+    const nets = os.networkInterfaces();
+    for (const [name, iface] of Object.entries(nets)) {
+      for (const addr of iface) {
+        if (addr.family === 'IPv4' && !addr.internal) {
+          console.log(`[clawd-soul]   ${name}: http://${addr.address}:${port}`);
+        }
+      }
+    }
+  }
   console.log(`[clawd-soul] trust: ${(soul.get().trust * 100).toFixed(0)}%, mood: energy=${soul.get().mood.energy.toFixed(2)} interest=${soul.get().mood.interest.toFixed(2)} affection=${soul.get().mood.affection.toFixed(2)}`);
 
   // Graceful shutdown handlers

@@ -52,11 +52,16 @@ const DEFAULTS = {
 
   // Personality
   proactivenessLevel: 'quiet',  // 'silent' | 'quiet' | 'companion' | 'chatty'
+
+  // Network / multi-device
+  networkMode: 'local',         // 'local' (127.0.0.1) | 'lan' (0.0.0.0 with auth)
+  authToken: '',                // bearer token for remote access (auto-generated)
+  pairedDevices: [],            // [{ name, pairedAt }]
 };
 
 // Secret fields that should never be exposed via GET /config
 const SECRET_FIELDS = new Set([
-  'azureOpenaiKey', 'openaiKey', 'geminiKey', 'claudeKey', 'geminiEmbeddingKey',
+  'azureOpenaiKey', 'openaiKey', 'geminiKey', 'claudeKey', 'geminiEmbeddingKey', 'authToken',
 ]);
 
 // ---------------------------------------------------------------------------
