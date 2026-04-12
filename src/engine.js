@@ -57,6 +57,48 @@ function applyEvent(eventName) {
 }
 
 // ---------------------------------------------------------------------------
+// Time-of-day awareness
+// ---------------------------------------------------------------------------
+let _lastObservationTime = 0;
+let _todayGreeted = false;
+let _lastBreakNudge = 0;
+let _continuousWorkStart = 0;
+
+const BREAK_NUDGE_AFTER_MS = 90 * 60 * 1000;    // 90 min continuous work
+const BREAK_NUDGE_COOLDOWN_MS = 60 * 60 * 1000;  // don't re-nudge for 60 min
+const ABSENCE_THRESHOLD_MS = 30 * 60 * 1000;     // 30 min = "long absence"
+
+function getTimeOfDay() {
+  const h = new Date().getHours();
+  if (h >= 5 && h < 12) return 'morning';
+  if (h >= 12 && h < 17) return 'afternoon';
+  if (h >= 17 && h < 21) return 'evening';
+  return 'night';
+}
+
+/** Called on every observation — tracks timing for greetings/breaks */
+function recordObservationTime() {
+  const now = Date.now();
+  const gap = _lastObservationTime > 0 ? now - _lastObservationTime : 0;
+  _lastObservationTime = now;
+
+  // Reset daily greeting at day boundary
+  const today = new Date().toDateString();
+  if (!_todayGreeted || _greetingDate !== today) {
+    _todayGreeted = false;
+    _greetingDate = today;
+  }
+
+  // Track continuous work
+  if (gap > ABSENCE_THRESHOLD_MS || gap === 0) {
+    _continuousWorkStart = now; // reset on long gap or first observation
+  }
+
+  return { gap, timeOfDay: getTimeOfDay() };
+}
+let _greetingDate = '';
+
+// ---------------------------------------------------------------------------
 // Proactiveness decisions
 // ---------------------------------------------------------------------------
 const PROACTIVE_THRESHOLDS = {
@@ -66,26 +108,98 @@ const PROACTIVE_THRESHOLDS = {
   chatty: 0.25,         // almost always has something to say
 };
 
-/** Pending proactive message, if any */
-let _proactiveMessage = null;
-let _proactiveExpiry = 0;
+/** Pending proactive message queue */
+let _proactiveQueue = [];
 
 /** Set a proactive message (from observation that the pet wants to share) */
-function setProactiveMessage(message) {
-  _proactiveMessage = message;
-  _proactiveExpiry = Date.now() + 120000; // expires in 2 min
+function setProactiveMessage(message, priority = 0) {
+  _proactiveQueue.push({ message, priority, expiry: Date.now() + 120000 });
+  // Sort by priority descending, keep max 3
+  _proactiveQueue.sort((a, b) => b.priority - a.priority);
+  if (_proactiveQueue.length > 3) _proactiveQueue.length = 3;
 }
 
 /** Check if the pet wants to say something unprompted */
 function getProactiveMessage() {
-  if (!_proactiveMessage) return null;
-  if (Date.now() > _proactiveExpiry) {
-    _proactiveMessage = null;
-    return null;
+  // Prune expired
+  const now = Date.now();
+  _proactiveQueue = _proactiveQueue.filter((m) => now < m.expiry);
+
+  if (_proactiveQueue.length === 0) return null;
+  return _proactiveQueue.shift().message;
+}
+
+/**
+ * Generate context-aware proactive messages based on time/absence/breaks.
+ * Called periodically by the server's proactive poll.
+ */
+function generateProactiveContext() {
+  const now = Date.now();
+  const s = soul.get();
+  const cfg = config.get();
+  const lang = cfg.language || 'en';
+  const name = cfg.petName || s.name || 'Clawd';
+  const tod = getTimeOfDay();
+
+  // Morning greeting (once per day, first poll of the morning)
+  if (!_todayGreeted && (tod === 'morning' || tod === 'afternoon')) {
+    _todayGreeted = true;
+    _greetingDate = new Date().toDateString();
+    applyEvent('morning');
+
+    const greetings = lang === 'zh'
+      ? [`*伸懒腰* 早上好呀～今天也要加油哦！`, `*揉揉眼睛* 新的一天开始啦！`, `*挥挥小钳子* 早安！今天想做什么呢？`]
+      : [`*stretches claws* Good morning! Ready for a new day!`, `*yawns and waves* Hey, you're here! Let's go!`, `*clicks claws excitedly* Morning! What are we up to today?`];
+    setProactiveMessage(greetings[Math.floor(Math.random() * greetings.length)], 2);
   }
-  const msg = _proactiveMessage;
-  _proactiveMessage = null;
-  return msg;
+
+  // Break nudge (after 90min continuous work)
+  if (_continuousWorkStart > 0 && (now - _continuousWorkStart) > BREAK_NUDGE_AFTER_MS) {
+    if ((now - _lastBreakNudge) > BREAK_NUDGE_COOLDOWN_MS) {
+      _lastBreakNudge = now;
+      const nudges = lang === 'zh'
+        ? [`*拉拉你的袖子* 你已经工作好久了，休息一下吧～`, `*担心地看着你* 要不要站起来活动活动？`]
+        : [`*tugs your sleeve* You've been working a while... maybe take a break?`, `*looks up worried* Hey, stretch your legs? You've been at it for a while!`];
+      setProactiveMessage(nudges[Math.floor(Math.random() * nudges.length)], 1);
+    }
+  }
+
+  // Night time mood
+  if (tod === 'night' && s.mood.energy > 0.4) {
+    // Occasionally comment about it being late
+    if (Math.random() < 0.1) { // ~10% chance per poll
+      const nightMsgs = lang === 'zh'
+        ? [`*打哈欠* 好晚了呢...你也早点休息吧`, `*眯起眼睛* 夜深了哦～`]
+        : [`*yawns* It's getting late... don't stay up too long!`, `*blinks sleepily* It's pretty late, you know...`];
+      setProactiveMessage(nightMsgs[Math.floor(Math.random() * nightMsgs.length)], 0);
+    }
+  }
+}
+
+/**
+ * Handle user return after absence.
+ * @param {number} gapMs - milliseconds since last observation
+ */
+function handleUserReturn(gapMs) {
+  if (gapMs < ABSENCE_THRESHOLD_MS) return;
+
+  applyEvent('user-returned');
+
+  const lang = (config.get().language) || 'en';
+  const hours = Math.floor(gapMs / 3600000);
+  const mins = Math.floor((gapMs % 3600000) / 60000);
+
+  let msg;
+  if (hours > 0) {
+    msg = lang === 'zh'
+      ? `*兴奋地挥钳子* 你回来啦！你走了 ${hours} 个多小时，我好无聊哦～`
+      : `*waves claws excitedly* You're back! You were gone for ${hours}+ hours, I was so bored!`;
+  } else {
+    msg = lang === 'zh'
+      ? `*探头看看* 欢迎回来！离开了 ${mins} 分钟呢～`
+      : `*peeks up* Welcome back! You were away for ${mins} minutes~`;
+  }
+  setProactiveMessage(msg, 2);
 }
 
 /** Should the pet comment on this observation? */
@@ -132,4 +246,8 @@ export default {
   getProactiveMessage,
   getProactivenessLevel,
   getPersonalityContext,
+  recordObservationTime,
+  generateProactiveContext,
+  handleUserReturn,
+  getTimeOfDay,
 };

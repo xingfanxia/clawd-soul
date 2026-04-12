@@ -88,6 +88,9 @@ routes['POST /chat'] = async (req, res) => {
 
 // GET /proactive — poll for unprompted pet messages
 routes['GET /proactive'] = async (_req, res) => {
+  // Generate context-aware proactive messages (morning, break, night)
+  engine.generateProactiveContext();
+
   const msg = engine.getProactiveMessage();
   if (msg) {
     json(res, { ok: true, commentary: msg, mood: { ...soul.get().mood }, action: 'speech-bubble', duration: 8000 });

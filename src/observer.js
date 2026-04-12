@@ -15,6 +15,28 @@ let _consecutiveSilent = 0;
 const MIN_OBSERVE_INTERVAL_MS = 10000; // minimum 10s between observations
 
 // ---------------------------------------------------------------------------
+// App categorization — helps the pet react appropriately
+// ---------------------------------------------------------------------------
+const APP_CATEGORIES = {
+  coding: ['Visual Studio Code', 'Code', 'Cursor', 'Xcode', 'IntelliJ', 'WebStorm', 'PyCharm', 'Sublime Text', 'Atom', 'Vim', 'Neovim', 'Emacs', 'Terminal', 'iTerm', 'Warp', 'Alacritty', 'Ghostty', 'Hyper'],
+  browsing: ['Arc', 'Safari', 'Chrome', 'Firefox', 'Brave', 'Edge', 'Opera', 'Vivaldi'],
+  communication: ['Slack', 'Discord', 'Telegram', 'WhatsApp', 'Messages', 'WeChat', 'Teams', 'Zoom', 'FaceTime'],
+  creative: ['Figma', 'Sketch', 'Photoshop', 'Illustrator', 'Blender', 'Final Cut', 'Logic Pro', 'GarageBand'],
+  writing: ['Notion', 'Obsidian', 'Bear', 'Ulysses', 'Pages', 'Word', 'Google Docs'],
+  media: ['Spotify', 'Music', 'YouTube', 'Netflix', 'Bilibili', 'VLC', 'IINA'],
+  gaming: ['Steam', 'Minecraft', 'Roblox'],
+};
+
+function categorizeApp(appName) {
+  if (!appName) return 'unknown';
+  const lower = appName.toLowerCase();
+  for (const [cat, apps] of Object.entries(APP_CATEGORIES)) {
+    if (apps.some((a) => lower.includes(a.toLowerCase()))) return cat;
+  }
+  return 'other';
+}
+
+// ---------------------------------------------------------------------------
 // Observation handler
 // ---------------------------------------------------------------------------
 
@@ -40,11 +62,18 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
     return { ok: false, error: 'No API key configured', action: 'silent', commentary: '' };
   }
 
+  // Track timing (morning greeting, absence detection, break nudges)
+  const timing = engine.recordObservationTime();
+  if (timing.gap > 0) {
+    engine.handleUserReturn(timing.gap);
+  }
+
   // Tick mood decay
   engine.tickMoodDecay();
 
-  // Get personality context
+  // Get personality context + app category
   const ctx = engine.getPersonalityContext();
+  const appCategory = categorizeApp(foregroundApp);
 
   // Retrieve relevant memories
   const searchQuery = `${foregroundApp} ${windowTitle}`.trim();
@@ -56,10 +85,12 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
     // Memory search failed — continue without memories
   }
 
-  // Build the system prompt
+  // Build the system prompt with app context
   const systemPrompt = prompts.observation({
     ...ctx,
     memories: relevantMemories,
+    appCategory,
+    timeOfDay: timing.timeOfDay,
   });
 
   // Build user message with screenshot
