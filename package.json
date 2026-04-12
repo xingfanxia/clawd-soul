@@ -1,0 +1,16 @@
+{
+  "name": "clawd-soul",
+  "version": "0.1.0",
+  "description": "Standalone AI soul engine for the Clawd desktop pet",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "keywords": ["ai", "desktop-pet", "soul-engine"],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "sqlite-vec": "^0.1.6"
+  }
+}
