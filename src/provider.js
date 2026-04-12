@@ -273,10 +273,11 @@ async function embed(text) {
   const key = cfg.geminiEmbeddingKey || cfg.geminiKey;
   if (!key) return null;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent?key=${key}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${key}`;
   const res = await request(url, { timeout: 15000 }, {
-    model: 'models/embedding-001',
+    model: 'models/gemini-embedding-001',
     content: { parts: [{ text }] },
+    outputDimensionality: 768,
   });
 
   if (res.status !== 200) {
