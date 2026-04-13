@@ -11,6 +11,7 @@ import prompts from './prompts.js';
 let _lastObserveTime = 0;
 let _lastScreenSummary = '';
 let _consecutiveSilent = 0;
+let _recentCommentaries = []; // last 5 commentaries (for dedup/variety)
 
 const MIN_OBSERVE_INTERVAL_MS = 10000; // minimum 10s between observations
 
@@ -85,12 +86,13 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
     // Memory search failed — continue without memories
   }
 
-  // Build the system prompt with app context
+  // Build the system prompt with app context + recent commentaries for variety
   const systemPrompt = prompts.observation({
     ...ctx,
     memories: relevantMemories,
     appCategory,
     timeOfDay: timing.timeOfDay,
+    recentCommentaries: _recentCommentaries,
   });
 
   // Build user message with screenshot
@@ -167,6 +169,12 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
     }
 
     _lastScreenSummary = summary;
+
+    // Track recent commentaries for variety (dedup)
+    if (commentary && finalAction !== 'silent') {
+      _recentCommentaries.push(commentary);
+      if (_recentCommentaries.length > 5) _recentCommentaries.shift();
+    }
 
     // Save soul periodically (every 10 observations)
     if (soul.get().stats.totalObservations % 10 === 0) {
