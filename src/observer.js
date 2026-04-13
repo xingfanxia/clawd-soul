@@ -142,7 +142,7 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
   soul.recordInteraction('observation');
 
   // Compact session if needed
-  if (session.needsCompaction()) {
+  if (session.needsCompaction(provider.getUsageStats().lastPromptTokens)) {
     await session.compact();
   }
 
@@ -273,7 +273,7 @@ async function chat(message) {
     soul.save();
 
     // Compact if approaching limit
-    if (session.needsCompaction()) {
+    if (session.needsCompaction(provider.getUsageStats().lastPromptTokens)) {
       session.compact().catch((err) => console.error('[observer] compaction failed:', err.message));
     }
 

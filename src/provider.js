@@ -63,7 +63,7 @@ async function azureOpenaiChat(messages, { deployment, maxTokens = 300, temperat
   if (res.status !== 200) {
     throw new Error(`Azure OpenAI ${res.status}: ${JSON.stringify(res.data)}`);
   }
-  return res.data.choices[0].message.content;
+  return { text: res.data.choices[0].message.content, usage: res.data.usage || null };
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +87,7 @@ async function openaiChat(messages, { model, maxTokens = 300, temperature = 0.7,
   if (res.status !== 200) {
     throw new Error(`OpenAI ${res.status}: ${JSON.stringify(res.data)}`);
   }
-  return res.data.choices[0].message.content;
+  return { text: res.data.choices[0].message.content, usage: res.data.usage || null };
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +146,10 @@ async function geminiChat(messages, { model, maxTokens = 300, temperature = 0.7,
   if (res.status !== 200) {
     throw new Error(`Gemini ${res.status}: ${JSON.stringify(res.data)}`);
   }
-  return res.data.candidates[0].content.parts[0].text;
+  // Gemini returns usageMetadata with promptTokenCount + candidatesTokenCount
+  const gUsage = res.data.usageMetadata;
+  const usage = gUsage ? { prompt_tokens: gUsage.promptTokenCount, completion_tokens: gUsage.candidatesTokenCount, total_tokens: gUsage.totalTokenCount } : null;
+  return { text: res.data.candidates[0].content.parts[0].text, usage };
 }
 
 // ---------------------------------------------------------------------------
@@ -204,22 +207,54 @@ async function claudeChat(messages, { model, maxTokens = 300, temperature = 0.7 
   if (res.status !== 200) {
     throw new Error(`Claude ${res.status}: ${JSON.stringify(res.data)}`);
   }
-  return res.data.content[0].text;
+  // Claude returns usage with input_tokens + output_tokens
+  const cUsage = res.data.usage;
+  const usage = cUsage ? { prompt_tokens: cUsage.input_tokens, completion_tokens: cUsage.output_tokens, total_tokens: (cUsage.input_tokens || 0) + (cUsage.output_tokens || 0) } : null;
+  return { text: res.data.content[0].text, usage };
 }
 
 // ---------------------------------------------------------------------------
 // Unified chat interface
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Token usage tracking
+// ---------------------------------------------------------------------------
+let _totalPromptTokens = 0;
+let _totalCompletionTokens = 0;
+let _lastPromptTokens = 0;   // from most recent call (for compaction decisions)
+let _requestCount = 0;
+
+function recordUsage(usage) {
+  if (!usage) return;
+  _totalPromptTokens += usage.prompt_tokens || 0;
+  _totalCompletionTokens += usage.completion_tokens || 0;
+  _lastPromptTokens = usage.prompt_tokens || 0;
+  _requestCount++;
+}
+
+function getUsageStats() {
+  return {
+    totalPromptTokens: _totalPromptTokens,
+    totalCompletionTokens: _totalCompletionTokens,
+    totalTokens: _totalPromptTokens + _totalCompletionTokens,
+    lastPromptTokens: _lastPromptTokens,
+    requestCount: _requestCount,
+  };
+}
+
 /**
  * Send a chat completion request to the configured provider.
+ * Returns the text content. Usage is tracked internally.
  * @param {Array} messages - OpenAI-style messages [{role, content}]
- * @param {Object} opts - { purpose: 'observe'|'chat'|'diary', maxTokens, temperature, jsonMode }
+ * @param {Object} opts - { purpose, maxTokens, temperature, jsonMode }
+ * @returns {string} response text
  */
 async function chat(messages, opts = {}) {
   const cfg = config.get();
   const purpose = opts.purpose || 'chat';
 
+  let result;
   switch (cfg.provider) {
     case 'azure-openai': {
       const deploymentMap = {
@@ -228,10 +263,11 @@ async function chat(messages, opts = {}) {
         diary: cfg.azureOpenaiDeploymentChat,
         reason: cfg.azureOpenaiDeploymentReason,
       };
-      return azureOpenaiChat(messages, {
+      result = await azureOpenaiChat(messages, {
         deployment: deploymentMap[purpose] || cfg.azureOpenaiDeploymentChat,
         ...opts,
       });
+      break;
     }
     case 'openai': {
       const modelMap = {
@@ -239,10 +275,11 @@ async function chat(messages, opts = {}) {
         chat: cfg.openaiModelChat,
         diary: cfg.openaiModelChat,
       };
-      return openaiChat(messages, {
+      result = await openaiChat(messages, {
         model: modelMap[purpose] || cfg.openaiModelChat,
         ...opts,
       });
+      break;
     }
     case 'gemini': {
       const modelMap = {
@@ -250,19 +287,31 @@ async function chat(messages, opts = {}) {
         chat: cfg.geminiModelChat,
         diary: cfg.geminiModelChat,
       };
-      return geminiChat(messages, {
+      result = await geminiChat(messages, {
         model: modelMap[purpose] || cfg.geminiModelChat,
         ...opts,
       });
+      break;
     }
     case 'claude':
-      return claudeChat(messages, {
+      result = await claudeChat(messages, {
         model: opts.purpose === 'observe' ? cfg.claudeModelObserve : cfg.claudeModelChat,
         ...opts,
       });
+      break;
     default:
       throw new Error(`Unknown provider: ${cfg.provider}`);
   }
+
+  // Track usage from response
+  recordUsage(result.usage);
+
+  // Log usage for monitoring
+  if (result.usage) {
+    console.log(`[provider] ${purpose}: ${result.usage.prompt_tokens || '?'}→${result.usage.completion_tokens || '?'} tokens (total: ${_totalPromptTokens + _totalCompletionTokens})`);
+  }
+
+  return result.text;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,4 +386,4 @@ async function testKey(provider, credentials) {
   }
 }
 
-export default { chat, embed, testKey };
+export default { chat, embed, testKey, getUsageStats };

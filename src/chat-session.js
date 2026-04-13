@@ -234,7 +234,17 @@ function estimateChars() {
 }
 
 /** Check if compaction is needed */
-function needsCompaction() {
+/**
+ * Check if compaction is needed.
+ * Uses real token count from last API call if available, falls back to char estimate.
+ * @param {number} [lastPromptTokens] - actual prompt_tokens from last API response
+ */
+function needsCompaction(lastPromptTokens) {
+  // If we have real token count from the API, use it
+  if (lastPromptTokens && lastPromptTokens > TOKEN_LIMIT * 0.8) {
+    return true; // compact at 80% of limit to leave headroom
+  }
+  // Fallback to character estimate
   return estimateChars() > COMPACT_THRESHOLD_CHARS;
 }
 

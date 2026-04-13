@@ -232,10 +232,9 @@ routes['GET /health'] = async (_req, res) => {
     memoryCount: memory.count(),
     chatSession: {
       messages: observer.getChatHistory().messages.length,
-      estimatedTokens: (await import('./chat-session.js')).default.estimateTokens(),
-      tokenLimit: (await import('./chat-session.js')).default.TOKEN_LIMIT,
       hasSummary: !!(observer.getChatHistory().summary),
     },
+    tokenUsage: provider.getUsageStats(),
     mood: { ...soul.get().mood },
     trust: soul.get().trust,
   });
