@@ -50,9 +50,15 @@ function applyEvent(eventName) {
   soul.updateMood(effects);
 
   // Trust grows with positive interactions
-  const trustEvents = new Set(['chat-received', 'chat-long', 'pet-clicked', 'user-returned']);
-  if (trustEvents.has(eventName)) {
-    soul.addTrust(0.005);
+  const trustGrowth = {
+    'chat-received': 0.015,
+    'chat-long': 0.025,
+    'pet-clicked': 0.01,
+    'user-returned': 0.01,
+    'observation-interesting': 0.005,
+  };
+  if (trustGrowth[eventName]) {
+    soul.addTrust(trustGrowth[eventName]);
   }
 }
 
@@ -103,9 +109,9 @@ let _greetingDate = '';
 // ---------------------------------------------------------------------------
 const PROACTIVE_THRESHOLDS = {
   silent: Infinity,     // never proactive
-  quiet: 0.75,          // only when very interested + energetic
-  companion: 0.5,       // moderate threshold
-  chatty: 0.25,         // almost always has something to say
+  quiet: 0.45,          // was 0.75 — too aggressive, pet almost never spoke
+  companion: 0.3,       // moderate threshold
+  chatty: 0.15,         // almost always has something to say
 };
 
 /** Pending proactive message queue */

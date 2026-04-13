@@ -16,6 +16,64 @@ let _recentCommentaries = []; // last 5 commentaries (for dedup/variety)
 const MIN_OBSERVE_INTERVAL_MS = 10000; // minimum 10s between observations
 
 // ---------------------------------------------------------------------------
+// Semantic memory extraction — learn facts about the user over time
+// ---------------------------------------------------------------------------
+const _appUsageCount = new Map(); // track which apps the user uses most
+
+function extractSemanticMemory(app, summary) {
+  // Track app usage
+  if (app) {
+    _appUsageCount.set(app, (_appUsageCount.get(app) || 0) + 1);
+    const count = _appUsageCount.get(app);
+    // After seeing an app 3+ times, remember it
+    if (count === 3) {
+      soul.addSemanticMemory(`Owner frequently uses ${app}`);
+    }
+  }
+
+  // Extract facts from summary (simple pattern matching)
+  const lower = summary.toLowerCase();
+  if (lower.includes('code') || lower.includes('coding') || lower.includes('programming') || lower.includes('github')) {
+    soul.addSemanticMemory('Owner is a programmer/developer');
+  }
+  if (lower.includes('bilibili') || lower.includes('b站')) {
+    soul.addSemanticMemory('Owner watches Bilibili');
+  }
+  if (lower.includes('youtube')) {
+    soul.addSemanticMemory('Owner watches YouTube');
+  }
+  if (lower.includes('slack') || lower.includes('discord') || lower.includes('teams')) {
+    soul.addSemanticMemory('Owner uses team chat for work');
+  }
+  if (lower.includes('chinese') || lower.includes('中文')) {
+    soul.addSemanticMemory('Owner reads/writes Chinese');
+  }
+}
+
+function extractFromChat(userMessage) {
+  const lower = userMessage.toLowerCase();
+  // Learn from personal statements — broad matching
+  const personalPatterns = [
+    /my name is|i am|i'm|我叫|我是/,
+    /i like|i love|i enjoy|i prefer|我喜欢|我爱|我最爱/,
+    /i work|my job|i do|我工作|我做|我在做|在做/,
+    /i hate|i don't like|i dislike|我讨厌|我不喜欢/,
+    /i live|i'm from|i moved|我住|我来自|我从/,
+    /i study|i'm learning|i'm studying|我在学|我学/,
+    /my favorite|最喜欢|最爱的/,
+    /today i|今天我/,
+  ];
+
+  for (const pattern of personalPatterns) {
+    if (pattern.test(lower)) {
+      soul.addSemanticMemory(userMessage.slice(0, 120));
+      soul.save();
+      break; // one match per message is enough
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // App categorization — helps the pet react appropriately
 // ---------------------------------------------------------------------------
 const APP_CATEGORIES = {
@@ -103,7 +161,7 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
   if (screenshot) {
     userContent.push({
       type: 'image_url',
-      image_url: { url: `data:image/jpeg;base64,${screenshot}`, detail: 'low' },
+      image_url: { url: `data:image/jpeg;base64,${screenshot}`, detail: 'auto' },
     });
   }
 
@@ -115,8 +173,8 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
   try {
     const raw = await provider.chat(messages, {
       purpose: 'observe',
-      maxTokens: 300,
-      temperature: 0.8,
+      maxTokens: 500,
+      temperature: 0.85,
       jsonMode: true,
     });
 
@@ -142,6 +200,11 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
       app: foregroundApp,
       mood: soul.get().mood,
     });
+
+    // Extract semantic memory — learn about the user from observations
+    if (interesting && summary) {
+      extractSemanticMemory(foregroundApp, summary);
+    }
 
     // Update soul stats
     soul.recordInteraction('observation');
@@ -281,6 +344,9 @@ async function chat(message) {
 
     // Append AI reply to conversation history
     appendChatHistory('assistant', reply);
+
+    // Learn about the user from what they say
+    extractFromChat(message);
 
     // Update stats and mood
     soul.recordInteraction('chat');
