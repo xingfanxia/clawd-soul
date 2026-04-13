@@ -195,8 +195,31 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
 }
 
 // ---------------------------------------------------------------------------
-// Chat handler
+// Chat handler — with conversation history
 // ---------------------------------------------------------------------------
+
+/** Rolling conversation history (last 20 turns, expires after 30 min of silence) */
+let _chatHistory = [];
+let _lastChatTime = 0;
+const CHAT_HISTORY_MAX = 20;
+const CHAT_SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
+
+function getChatHistory() {
+  // Clear history if session timed out
+  if (_lastChatTime > 0 && (Date.now() - _lastChatTime) > CHAT_SESSION_TIMEOUT_MS) {
+    _chatHistory = [];
+  }
+  return _chatHistory;
+}
+
+function appendChatHistory(role, content) {
+  _chatHistory.push({ role, content });
+  // Keep only last N turns
+  if (_chatHistory.length > CHAT_HISTORY_MAX) {
+    _chatHistory = _chatHistory.slice(-CHAT_HISTORY_MAX);
+  }
+  _lastChatTime = Date.now();
+}
 
 /**
  * Handle a chat message from the user.
@@ -231,8 +254,13 @@ async function chat(message) {
     recentObservations: recentObs,
   });
 
+  // Build messages with conversation history
+  const history = getChatHistory();
+  appendChatHistory('user', message);
+
   const messages = [
     { role: 'system', content: systemPrompt },
+    ...history, // previous turns
     { role: 'user', content: message },
   ];
 
@@ -250,6 +278,9 @@ async function chat(message) {
       detail: reply,
       mood: soul.get().mood,
     });
+
+    // Append AI reply to conversation history
+    appendChatHistory('assistant', reply);
 
     // Update stats and mood
     soul.recordInteraction('chat');
