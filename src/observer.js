@@ -178,11 +178,22 @@ async function reactToScreen({ screenshot, foregroundApp, windowTitle }) {
   // Get conversation context from session
   const messages = session.getMessagesForAI(systemPrompt);
 
+  // Get pet's recent messages to avoid repetition
+  const recentPetMsgs = session.getHistory().messages
+    .filter((m) => m.role === 'assistant')
+    .slice(-3)
+    .map((m) => m.content);
+  const noRepeatBlock = recentPetMsgs.length
+    ? (isZh
+      ? `\n\n你刚才说过这些（绝对不要重复类似的话）：\n${recentPetMsgs.map((m) => `- "${m.slice(0, 80)}"`).join('\n')}`
+      : `\n\nYou just said these (NEVER repeat similar things):\n${recentPetMsgs.map((m) => `- "${m.slice(0, 80)}"`).join('\n')}`)
+    : '';
+
   // Add the screenshot as the user's "turn" — the pet sees the screen
   const screenContent = [
     { type: 'text', text: isZh
-      ? `[主人点了你一下，想让你看看屏幕说点什么]\n当前应用: ${foregroundApp || '未知'}\n窗口标题: ${windowTitle || '未知'}\n\n像朋友一样对你看到的内容发表反应。如果你看到视频、文章、网页——对内容本身感兴趣，问问题、发表看法、吐槽。不要说"慢慢来"之类的废话。`
-      : `[Owner clicked you — they want you to look at the screen and react]\nApp: ${foregroundApp || 'unknown'}\nWindow: ${windowTitle || 'unknown'}\n\nReact to what you see like a friend would. If you see a video, article, webpage — be curious about the CONTENT. Ask questions, share opinions. Don't say generic encouragement.`,
+      ? `[主人点了你一下，想让你看看屏幕说点什么]\n当前应用: ${foregroundApp || '未知'}\n窗口标题: ${windowTitle || '未知'}\n\n像朋友一样对你看到的内容发表反应。如果你看到视频、文章、网页——对内容本身感兴趣，问问题、发表看法、吐槽。不要说"慢慢来"之类的废话。说点你之前没说过的新观点。${noRepeatBlock}`
+      : `[Owner clicked you — they want you to look at the screen and react]\nApp: ${foregroundApp || 'unknown'}\nWindow: ${windowTitle || 'unknown'}\n\nReact to what you see like a friend would. If you see a video, article, webpage — be curious about the CONTENT. Ask questions, share opinions. Don't say generic encouragement. Say something NEW you haven't said before.${noRepeatBlock}`,
     },
   ];
 
