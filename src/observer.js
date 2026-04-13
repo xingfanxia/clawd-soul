@@ -13,7 +13,38 @@ let _lastScreenSummary = '';
 let _consecutiveSilent = 0;
 let _recentCommentaries = []; // last 5 commentaries (for dedup/variety)
 
-const MIN_OBSERVE_INTERVAL_MS = 10000; // minimum 10s between observations
+const MIN_OBSERVE_INTERVAL_MS = 15000; // minimum 15s between observations
+
+// ---------------------------------------------------------------------------
+// Daily context — running story of the day (makes every comment feel connected)
+// ---------------------------------------------------------------------------
+let _dailyContext = [];        // [{time, event}] — key moments of the day
+let _dailyContextDate = '';    // reset on new day
+const MAX_DAILY_CONTEXT = 15;  // keep last 15 events
+
+function getDailyContext() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (_dailyContextDate !== today) {
+    _dailyContext = [];
+    _dailyContextDate = today;
+  }
+  return _dailyContext;
+}
+
+function addDailyContext(event) {
+  const ctx = getDailyContext();
+  const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  ctx.push({ time, event });
+  if (ctx.length > MAX_DAILY_CONTEXT) ctx.shift();
+}
+
+function formatDailyContext(isZh) {
+  const ctx = getDailyContext();
+  if (ctx.length === 0) return '';
+  const header = isZh ? '\n\n【今天发生的事（你的一天）】' : '\n\n[YOUR DAY SO FAR]';
+  const lines = ctx.map((e) => `- ${e.time} ${e.event}`).join('\n');
+  return `${header}\n${lines}`;
+}
 
 // ---------------------------------------------------------------------------
 // Semantic memory extraction — learn facts about the user over time
@@ -144,13 +175,15 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
     // Memory search failed — continue without memories
   }
 
-  // Build the system prompt with app context + recent commentaries for variety
+  // Build the system prompt with app context + daily context + recent commentaries
+  const isZh = ctx.language === 'zh';
   const systemPrompt = prompts.observation({
     ...ctx,
     memories: relevantMemories,
     appCategory,
     timeOfDay: timing.timeOfDay,
     recentCommentaries: _recentCommentaries,
+    dailyContext: formatDailyContext(isZh),
   });
 
   // Build user message with screenshot
@@ -233,6 +266,11 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
 
     _lastScreenSummary = summary;
 
+    // Add to daily context (the pet's running story of the day)
+    if (summary && summary !== _lastScreenSummary) {
+      addDailyContext(summary);
+    }
+
     // Track recent commentaries for variety (dedup)
     if (commentary && finalAction !== 'silent') {
       _recentCommentaries.push(commentary);
@@ -311,10 +349,12 @@ async function chat(message) {
   const recentObs = memory.getRecentByType('observation', 5)
     .map((o) => o.summary);
 
+  const isZhChat = ctx.language === 'zh';
   const systemPrompt = prompts.chat({
     ...ctx,
     memories: relevantMemories,
     recentObservations: recentObs,
+    dailyContext: formatDailyContext(isZhChat),
   });
 
   // Build messages with conversation history
