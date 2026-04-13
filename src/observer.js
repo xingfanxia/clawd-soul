@@ -4,6 +4,7 @@ import memory from './memory.js';
 import engine from './engine.js';
 import soul from './soul-file.js';
 import prompts from './prompts.js';
+import personality from './personality.js';
 
 // ---------------------------------------------------------------------------
 // Rate limiting
@@ -206,8 +207,8 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
   try {
     const raw = await provider.chat(messages, {
       purpose: 'observe',
-      maxTokens: 500,
-      temperature: 0.85,
+      maxTokens: 250,
+      temperature: 0.9,
       jsonMode: true,
     });
 
@@ -370,8 +371,8 @@ async function chat(message) {
   try {
     const reply = await provider.chat(messages, {
       purpose: 'chat',
-      maxTokens: 300,
-      temperature: 0.8,
+      maxTokens: 150,
+      temperature: 0.9,
     });
 
     // Store chat in memory
@@ -387,6 +388,15 @@ async function chat(message) {
 
     // Learn about the user from what they say
     extractFromChat(message);
+
+    // Evolve personality based on interaction signals
+    const signals = personality.detectSignals(message);
+    const s = soul.get();
+    for (const signal of signals) {
+      s.evolvedTraits = personality.evolveTraits(s.evolvedTraits, signal);
+    }
+    // Track chat time for drives
+    s.stats.lastChatTime = new Date().toISOString();
 
     // Update stats and mood
     soul.recordInteraction('chat');

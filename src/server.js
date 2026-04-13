@@ -91,9 +91,28 @@ routes['GET /proactive'] = async (_req, res) => {
   // Generate context-aware proactive messages (morning, break, night)
   engine.generateProactiveContext();
 
-  const msg = engine.getProactiveMessage();
+  // Drive: pet wants to ask the user a question
+  const s = soul.get();
+  const cfg = config.get();
+  const lastChat = s.stats.lastChatTime ? new Date(s.stats.lastChatTime).getTime() : 0;
+  const hoursSinceChat = (Date.now() - lastChat) / 3600000;
+
+  // If no proactive message and pet is curious (hasn't chatted in 2+ hours), ask a question
+  let msg = engine.getProactiveMessage();
+  if (!msg && hoursSinceChat > 2 && Math.random() < 0.3) {
+    const question = (await import('./personality.js')).default.pickQuestion(
+      cfg.language || 'zh',
+      s.askedQuestions || [],
+    );
+    if (question) {
+      msg = question;
+      s.askedQuestions = [...(s.askedQuestions || []), question];
+      soul.save();
+    }
+  }
+
   if (msg) {
-    json(res, { ok: true, commentary: msg, mood: { ...soul.get().mood }, action: 'speech-bubble', duration: 8000 });
+    json(res, { ok: true, commentary: msg, mood: { ...soul.get().mood }, action: 'speech-bubble', duration: 10000 });
   } else {
     json(res, { ok: true, commentary: '', action: 'none' });
   }
@@ -184,6 +203,23 @@ routes['PUT /config'] = async (req, res) => {
 
   config.update(body);
   json(res, { ok: true, config: config.getSafe() });
+};
+
+// PUT /soul/archetype — set personality archetype
+routes['PUT /soul/archetype'] = async (req, res) => {
+  const body = await readBody(req);
+  if (!body?.archetype) return json(res, { ok: false, error: 'Missing archetype' }, 400);
+
+  const valid = ['playful', 'curious', 'caring', 'snarky', 'chill'];
+  if (!valid.includes(body.archetype)) {
+    return json(res, { ok: false, error: `Invalid archetype. Valid: ${valid.join(', ')}` }, 400);
+  }
+
+  const s = soul.get();
+  s.archetype = body.archetype;
+  s.evolvedTraits = {}; // reset traits on archetype change
+  soul.save();
+  json(res, { ok: true, archetype: s.archetype });
 };
 
 // POST /config/test-key — test API key

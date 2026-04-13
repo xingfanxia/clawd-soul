@@ -8,9 +8,15 @@ const SOUL_PATH = () => path.join(config.DATA_DIR, 'soul.json');
 // Default soul — a brand-new Clawd
 // ---------------------------------------------------------------------------
 const DEFAULT_SOUL = () => ({
-  version: 1,
+  version: 2,
   name: config.get().petName || 'Clawd',
   createdAt: new Date().toISOString(),
+
+  // Personality archetype ('playful' | 'curious' | 'caring' | 'snarky' | 'chill')
+  archetype: 'playful',
+
+  // Evolved traits (shift over time based on interactions, 0–1)
+  evolvedTraits: {},
 
   // Mood axes (0.0–1.0)
   mood: {
@@ -25,6 +31,9 @@ const DEFAULT_SOUL = () => ({
   // Semantic memory — key phrases the pet remembers about the user
   semanticMemory: [],
 
+  // Questions the pet has already asked (for drive system)
+  askedQuestions: [],
+
   // Catchphrases the pet has developed
   catchphrases: [],
 
@@ -36,6 +45,7 @@ const DEFAULT_SOUL = () => ({
     daysActive: 0,
     firstInteraction: null,
     lastInteraction: null,
+    lastChatTime: null,
   },
 
   // Proactiveness level override (null = use config default)

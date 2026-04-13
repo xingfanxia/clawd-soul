@@ -241,6 +241,8 @@ function getPersonalityContext() {
     mood: { ...s.mood },
     trust: s.trust,
     semanticMemory: [...s.semanticMemory],
+    archetype: s.archetype || 'playful',
+    evolvedTraits: { ...s.evolvedTraits },
   };
 }
 
