@@ -5,117 +5,65 @@ import engine from './engine.js';
 import soul from './soul-file.js';
 import prompts from './prompts.js';
 import personality from './personality.js';
+import session from './chat-session.js';
 
 // ---------------------------------------------------------------------------
 // Rate limiting
 // ---------------------------------------------------------------------------
 let _lastObserveTime = 0;
 let _lastScreenSummary = '';
-let _consecutiveSilent = 0;
-let _recentCommentaries = []; // last 5 commentaries (for dedup/variety)
 
-const MIN_OBSERVE_INTERVAL_MS = 15000; // minimum 15s between observations
+const MIN_OBSERVE_INTERVAL_MS = 15000;
 
 // ---------------------------------------------------------------------------
-// Daily context — running story of the day (makes every comment feel connected)
+// Semantic memory extraction
 // ---------------------------------------------------------------------------
-let _dailyContext = [];        // [{time, event}] — key moments of the day
-let _dailyContextDate = '';    // reset on new day
-const MAX_DAILY_CONTEXT = 15;  // keep last 15 events
-
-function getDailyContext() {
-  const today = new Date().toISOString().slice(0, 10);
-  if (_dailyContextDate !== today) {
-    _dailyContext = [];
-    _dailyContextDate = today;
-  }
-  return _dailyContext;
-}
-
-function addDailyContext(event) {
-  const ctx = getDailyContext();
-  const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
-  ctx.push({ time, event });
-  if (ctx.length > MAX_DAILY_CONTEXT) ctx.shift();
-}
-
-function formatDailyContext(isZh) {
-  const ctx = getDailyContext();
-  if (ctx.length === 0) return '';
-  const header = isZh ? '\n\n【今天发生的事（你的一天）】' : '\n\n[YOUR DAY SO FAR]';
-  const lines = ctx.map((e) => `- ${e.time} ${e.event}`).join('\n');
-  return `${header}\n${lines}`;
-}
-
-// ---------------------------------------------------------------------------
-// Semantic memory extraction — learn facts about the user over time
-// ---------------------------------------------------------------------------
-const _appUsageCount = new Map(); // track which apps the user uses most
+const _appUsageCount = new Map();
 
 function extractSemanticMemory(app, summary) {
-  // Track app usage
   if (app) {
     _appUsageCount.set(app, (_appUsageCount.get(app) || 0) + 1);
-    const count = _appUsageCount.get(app);
-    // After seeing an app 3+ times, remember it
-    if (count === 3) {
+    if (_appUsageCount.get(app) === 3) {
       soul.addSemanticMemory(`Owner frequently uses ${app}`);
     }
   }
-
-  // Extract facts from summary (simple pattern matching)
-  const lower = summary.toLowerCase();
-  if (lower.includes('code') || lower.includes('coding') || lower.includes('programming') || lower.includes('github')) {
-    soul.addSemanticMemory('Owner is a programmer/developer');
-  }
-  if (lower.includes('bilibili') || lower.includes('b站')) {
-    soul.addSemanticMemory('Owner watches Bilibili');
-  }
-  if (lower.includes('youtube')) {
-    soul.addSemanticMemory('Owner watches YouTube');
-  }
-  if (lower.includes('slack') || lower.includes('discord') || lower.includes('teams')) {
-    soul.addSemanticMemory('Owner uses team chat for work');
-  }
-  if (lower.includes('chinese') || lower.includes('中文')) {
-    soul.addSemanticMemory('Owner reads/writes Chinese');
-  }
+  const lower = (summary || '').toLowerCase();
+  if (lower.includes('code') || lower.includes('github')) soul.addSemanticMemory('Owner is a programmer');
+  if (lower.includes('bilibili') || lower.includes('b站')) soul.addSemanticMemory('Owner watches Bilibili');
+  if (lower.includes('youtube')) soul.addSemanticMemory('Owner watches YouTube');
 }
 
-function extractFromChat(userMessage) {
-  const lower = userMessage.toLowerCase();
-  // Learn from personal statements — broad matching
-  const personalPatterns = [
+function extractFromChat(message) {
+  const lower = message.toLowerCase();
+  const patterns = [
     /my name is|i am|i'm|我叫|我是/,
-    /i like|i love|i enjoy|i prefer|我喜欢|我爱|我最爱/,
-    /i work|my job|i do|我工作|我做|我在做|在做/,
-    /i hate|i don't like|i dislike|我讨厌|我不喜欢/,
-    /i live|i'm from|i moved|我住|我来自|我从/,
-    /i study|i'm learning|i'm studying|我在学|我学/,
+    /i like|i love|i enjoy|我喜欢|我爱|我最爱/,
+    /i work|my job|我工作|我做|我在做|在做/,
+    /i hate|i don't like|我讨厌|我不喜欢/,
+    /i live|i'm from|我住|我来自/,
+    /i study|i'm learning|我在学/,
     /my favorite|最喜欢|最爱的/,
     /today i|今天我/,
   ];
-
-  for (const pattern of personalPatterns) {
-    if (pattern.test(lower)) {
-      soul.addSemanticMemory(userMessage.slice(0, 120));
+  for (const p of patterns) {
+    if (p.test(lower)) {
+      soul.addSemanticMemory(message.slice(0, 120));
       soul.save();
-      break; // one match per message is enough
+      break;
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// App categorization — helps the pet react appropriately
+// App categorization
 // ---------------------------------------------------------------------------
 const APP_CATEGORIES = {
-  coding: ['Visual Studio Code', 'Code', 'Cursor', 'Xcode', 'IntelliJ', 'WebStorm', 'PyCharm', 'Sublime Text', 'Atom', 'Vim', 'Neovim', 'Emacs', 'Terminal', 'iTerm', 'Warp', 'Alacritty', 'Ghostty', 'Hyper'],
-  browsing: ['Arc', 'Safari', 'Chrome', 'Firefox', 'Brave', 'Edge', 'Opera', 'Vivaldi'],
-  communication: ['Slack', 'Discord', 'Telegram', 'WhatsApp', 'Messages', 'WeChat', 'Teams', 'Zoom', 'FaceTime'],
-  creative: ['Figma', 'Sketch', 'Photoshop', 'Illustrator', 'Blender', 'Final Cut', 'Logic Pro', 'GarageBand'],
-  writing: ['Notion', 'Obsidian', 'Bear', 'Ulysses', 'Pages', 'Word', 'Google Docs'],
-  media: ['Spotify', 'Music', 'YouTube', 'Netflix', 'Bilibili', 'VLC', 'IINA'],
-  gaming: ['Steam', 'Minecraft', 'Roblox'],
+  coding: ['Visual Studio Code', 'Code', 'Cursor', 'Xcode', 'IntelliJ', 'WebStorm', 'PyCharm', 'Terminal', 'iTerm', 'Warp', 'Alacritty', 'Ghostty'],
+  browsing: ['Arc', 'Safari', 'Chrome', 'Firefox', 'Brave', 'Edge'],
+  communication: ['Slack', 'Discord', 'Telegram', 'WhatsApp', 'Messages', 'WeChat', 'Teams', 'Zoom'],
+  creative: ['Figma', 'Sketch', 'Photoshop', 'Blender', 'Final Cut'],
+  writing: ['Notion', 'Obsidian', 'Bear', 'Pages', 'Word'],
+  media: ['Spotify', 'Music', 'YouTube', 'Netflix', 'Bilibili', 'VLC'],
 };
 
 function categorizeApp(appName) {
@@ -128,206 +76,149 @@ function categorizeApp(appName) {
 }
 
 // ---------------------------------------------------------------------------
-// Observation handler
+// Initialize — load chat session from disk
 // ---------------------------------------------------------------------------
+function init() {
+  session.load();
+  console.log(`[observer] chat session loaded: ${session.getHistory().messages.length} messages`);
+}
 
-/**
- * Handle a screen observation.
- * @param {Object} params
- * @param {string} params.screenshot - base64 JPEG
- * @param {string} params.foregroundApp - current app name
- * @param {string} params.windowTitle - current window title
- * @param {string} params.trigger - 'periodic' | 'app-switch' | 'user-click'
- * @returns {Object} { ok, commentary, mood, action, duration }
- */
+// ---------------------------------------------------------------------------
+// Observation — feeds SILENTLY into the conversation context
+//
+// The pet sees the screen and REMEMBERS what it saw, but does NOT
+// automatically comment. Commentary happens via heartbeat or chat.
+// ---------------------------------------------------------------------------
 async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
-  // Rate limit
   const now = Date.now();
   if (now - _lastObserveTime < MIN_OBSERVE_INTERVAL_MS && trigger === 'periodic') {
-    return { ok: true, action: 'throttled', commentary: '' };
+    return { ok: true, action: 'silent', commentary: '' };
   }
   _lastObserveTime = now;
 
-  // Check if provider is configured
   if (!config.hasApiKey()) {
     return { ok: false, error: 'No API key configured', action: 'silent', commentary: '' };
   }
 
-  // Track timing (morning greeting, absence detection, break nudges)
+  // Track timing
   const timing = engine.recordObservationTime();
-  if (timing.gap > 0) {
-    engine.handleUserReturn(timing.gap);
-  }
-
-  // Tick mood decay
+  if (timing.gap > 0) engine.handleUserReturn(timing.gap);
   engine.tickMoodDecay();
 
-  // Get personality context + app category
-  const ctx = engine.getPersonalityContext();
   const appCategory = categorizeApp(foregroundApp);
 
-  // Retrieve relevant memories
-  const searchQuery = `${foregroundApp} ${windowTitle}`.trim();
-  let relevantMemories = [];
-  try {
-    const results = await memory.search(searchQuery, 5);
-    relevantMemories = results.map((r) => r.summary);
-  } catch {
-    // Memory search failed — continue without memories
-  }
+  // Ask AI to describe the screen briefly (for context, NOT for display)
+  const descMessages = [
+    { role: 'system', content: 'Describe what you see on this screen in one brief sentence. Focus on the main activity. Chinese if the content is Chinese, English otherwise.' },
+    { role: 'user', content: [
+      { type: 'text', text: `App: ${foregroundApp || 'unknown'}, Window: ${windowTitle || 'unknown'}` },
+      ...(screenshot ? [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${screenshot}`, detail: 'auto' } }] : []),
+    ]},
+  ];
 
-  // Build the system prompt with app context + daily context + recent commentaries
-  const isZh = ctx.language === 'zh';
-  const systemPrompt = prompts.observation({
-    ...ctx,
-    memories: relevantMemories,
-    appCategory,
-    timeOfDay: timing.timeOfDay,
-    recentCommentaries: _recentCommentaries,
-    dailyContext: formatDailyContext(isZh),
+  let screenSummary = `${foregroundApp}: ${windowTitle}`;
+  try {
+    screenSummary = await provider.chat(descMessages, { purpose: 'observe', maxTokens: 100, temperature: 0.3 });
+  } catch {}
+
+  // Skip if screen hasn't changed
+  if (screenSummary === _lastScreenSummary) {
+    return { ok: true, action: 'silent', commentary: '' };
+  }
+  _lastScreenSummary = screenSummary;
+
+  // Add to conversation context SILENTLY (not shown to user)
+  session.addObservation(screenSummary);
+
+  // Store in episodic memory
+  await memory.addEpisode({
+    type: 'observation',
+    summary: screenSummary,
+    app: foregroundApp,
+    mood: soul.get().mood,
   });
 
-  // Build user message with screenshot
-  const userContent = [
-    { type: 'text', text: `App: ${foregroundApp || 'unknown'}\nWindow: ${windowTitle || 'unknown'}\nTrigger: ${trigger}` },
-  ];
+  extractSemanticMemory(foregroundApp, screenSummary);
+  soul.recordInteraction('observation');
 
-  if (screenshot) {
-    userContent.push({
-      type: 'image_url',
-      image_url: { url: `data:image/jpeg;base64,${screenshot}`, detail: 'auto' },
-    });
+  // Compact session if needed
+  if (session.needsCompaction()) {
+    await session.compact();
   }
 
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userContent },
-  ];
+  // Save soul periodically
+  if (soul.get().stats.totalObservations % 10 === 0) soul.save();
+
+  return { ok: true, action: 'silent', commentary: '', summary: screenSummary };
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat — the pet's "inner voice" that decides to speak or not
+//
+// Called every ~30 min. Reviews accumulated context (observations, time,
+// drives) and decides if it wants to say something to the user.
+// This is what makes the pet feel ALIVE — it initiates, not just reacts.
+// ---------------------------------------------------------------------------
+async function heartbeat() {
+  if (!config.hasApiKey()) return null;
+
+  engine.tickMoodDecay();
+  engine.generateProactiveContext();
+
+  // Check if there's a proactive message (morning greeting, break nudge, etc.)
+  const proactive = engine.getProactiveMessage();
+  if (proactive) {
+    session.addAssistant(proactive);
+    return { commentary: proactive, action: 'speech-bubble' };
+  }
+
+  // Check drives — does the pet want to ask a question?
+  const s = soul.get();
+  const cfg = config.get();
+  const lastChat = s.stats.lastChatTime ? new Date(s.stats.lastChatTime).getTime() : 0;
+  const hoursSinceChat = (Date.now() - lastChat) / 3600000;
+
+  if (hoursSinceChat > 1.5 && Math.random() < 0.4) {
+    const question = personality.pickQuestion(cfg.language || 'zh', s.askedQuestions || []);
+    if (question) {
+      s.askedQuestions = [...(s.askedQuestions || []), question];
+      soul.save();
+      session.addAssistant(question);
+      return { commentary: question, action: 'speech-bubble' };
+    }
+  }
+
+  // Otherwise, let the AI decide if it wants to say something
+  // based on the accumulated context
+  const ctx = engine.getPersonalityContext();
+  const systemPrompt = prompts.chat({
+    ...ctx,
+    recentObservations: [],
+    dailyContext: '',
+  });
+
+  const messages = session.getMessagesForAI(systemPrompt);
+  messages.push({
+    role: 'system',
+    content: ctx.language === 'zh'
+      ? '根据上面的对话和你最近观察到的事情，你现在想不想主动跟主人说点什么？如果想说就说，不想说就回复"[沉默]"。说话要自然，像朋友发微信。'
+      : 'Based on the conversation above and what you\'ve observed, do you want to say something to your owner? If yes, just say it. If not, reply "[silent]". Be natural, like texting a friend.',
+  });
 
   try {
-    const raw = await provider.chat(messages, {
-      purpose: 'observe',
-      maxTokens: 250,
-      temperature: 0.9,
-      jsonMode: true,
-    });
-
-    // Parse AI response
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      // If not valid JSON, treat as raw commentary
-      parsed = { commentary: raw, action: 'speech-bubble', summary: raw, interesting: false };
+    const reply = await provider.chat(messages, { purpose: 'chat', maxTokens: 200, temperature: 0.95 });
+    if (reply && !reply.includes('[沉默]') && !reply.includes('[silent]') && reply.trim().length > 0) {
+      session.addAssistant(reply);
+      return { commentary: reply, action: 'speech-bubble' };
     }
+  } catch {}
 
-    const action = parsed.action || 'speech-bubble';
-    const commentary = parsed.commentary || '';
-    const summary = parsed.summary || commentary;
-    const interesting = parsed.interesting ?? false;
-
-    // Store in memory (always, even silent ones — the pet remembers what it sees)
-    await memory.addEpisode({
-      type: 'observation',
-      summary,
-      detail: commentary,
-      app: foregroundApp,
-      mood: soul.get().mood,
-    });
-
-    // Extract semantic memory — learn about the user from observations
-    if (interesting && summary) {
-      extractSemanticMemory(foregroundApp, summary);
-    }
-
-    // Update soul stats
-    soul.recordInteraction('observation');
-
-    // Apply mood effects
-    if (action === 'silent') {
-      engine.applyEvent('observation-silent');
-      _consecutiveSilent++;
-    } else if (interesting) {
-      engine.applyEvent('observation-interesting');
-      _consecutiveSilent = 0;
-    } else {
-      engine.applyEvent('observation-boring');
-      _consecutiveSilent = 0;
-    }
-
-    // Check if pet should comment (proactiveness filter)
-    const finalAction = action === 'silent' ? 'silent'
-      : (!engine.shouldComment() && trigger === 'periodic') ? 'silent'
-      : action;
-
-    // If pet has something interesting to say but was filtered, save for proactive
-    if (action !== 'silent' && finalAction === 'silent' && interesting) {
-      engine.setProactiveMessage(commentary);
-    }
-
-    _lastScreenSummary = summary;
-
-    // Add to daily context (the pet's running story of the day)
-    if (summary && summary !== _lastScreenSummary) {
-      addDailyContext(summary);
-    }
-
-    // Track recent commentaries for variety (dedup)
-    if (commentary && finalAction !== 'silent') {
-      _recentCommentaries.push(commentary);
-      if (_recentCommentaries.length > 5) _recentCommentaries.shift();
-    }
-
-    // Save soul periodically (every 10 observations)
-    if (soul.get().stats.totalObservations % 10 === 0) {
-      soul.save();
-    }
-
-    return {
-      ok: true,
-      commentary: finalAction === 'silent' ? '' : commentary,
-      mood: { ...soul.get().mood },
-      action: finalAction,
-      duration: finalAction === 'silent' ? 0 : 8000,
-    };
-  } catch (err) {
-    console.error('[observer] AI call failed:', err.message);
-    return { ok: false, error: err.message, action: 'silent', commentary: '' };
-  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
-// Chat handler — with conversation history
+// Chat — continuous conversation using full persistent context
 // ---------------------------------------------------------------------------
-
-/** Rolling conversation history (last 20 turns, expires after 30 min of silence) */
-let _chatHistory = [];
-let _lastChatTime = 0;
-const CHAT_HISTORY_MAX = 20;
-const CHAT_SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
-
-function getChatHistory() {
-  // Clear history if session timed out
-  if (_lastChatTime > 0 && (Date.now() - _lastChatTime) > CHAT_SESSION_TIMEOUT_MS) {
-    _chatHistory = [];
-  }
-  return _chatHistory;
-}
-
-function appendChatHistory(role, content) {
-  _chatHistory.push({ role, content });
-  // Keep only last N turns
-  if (_chatHistory.length > CHAT_HISTORY_MAX) {
-    _chatHistory = _chatHistory.slice(-CHAT_HISTORY_MAX);
-  }
-  _lastChatTime = Date.now();
-}
-
-/**
- * Handle a chat message from the user.
- * @param {string} message - User's message
- * @returns {Object} { ok, reply, mood }
- */
 async function chat(message) {
   if (!config.hasApiKey()) {
     return { ok: false, error: 'No API key configured' };
@@ -337,86 +228,71 @@ async function chat(message) {
 
   const ctx = engine.getPersonalityContext();
 
-  // Search for relevant memories
-  let relevantMemories = [];
-  try {
-    const results = await memory.search(message, 5);
-    relevantMemories = results.map((r) => r.summary);
-  } catch {
-    // Continue without memories
-  }
+  // Add user message to persistent session
+  session.addUser(message);
 
-  // Get recent observations for context
-  const recentObs = memory.getRecentByType('observation', 5)
-    .map((o) => o.summary);
-
-  const isZhChat = ctx.language === 'zh';
+  // Build system prompt
   const systemPrompt = prompts.chat({
     ...ctx,
-    memories: relevantMemories,
-    recentObservations: recentObs,
-    dailyContext: formatDailyContext(isZhChat),
+    recentObservations: [],
+    dailyContext: '',
   });
 
-  // Build messages with conversation history
-  const history = getChatHistory();
-  appendChatHistory('user', message);
-
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    ...history, // previous turns
-    { role: 'user', content: message },
-  ];
+  // Get full conversation from session (includes summary + all history)
+  const messages = session.getMessagesForAI(systemPrompt);
 
   try {
     const reply = await provider.chat(messages, {
       purpose: 'chat',
-      maxTokens: 150,
+      maxTokens: 300,
       temperature: 0.9,
     });
 
-    // Store chat in memory
+    // Add reply to persistent session
+    session.addAssistant(reply);
+
+    // Store in episodic memory too (for search)
     await memory.addEpisode({
       type: 'chat',
-      summary: `User said: "${message.slice(0, 100)}" — Pet replied: "${reply.slice(0, 100)}"`,
+      summary: `User: "${message.slice(0, 80)}" → Pet: "${reply.slice(0, 80)}"`,
       detail: reply,
       mood: soul.get().mood,
     });
 
-    // Append AI reply to conversation history
-    appendChatHistory('assistant', reply);
-
-    // Learn about the user from what they say
+    // Learn + evolve
     extractFromChat(message);
-
-    // Evolve personality based on interaction signals
     const signals = personality.detectSignals(message);
     const s = soul.get();
     for (const signal of signals) {
       s.evolvedTraits = personality.evolveTraits(s.evolvedTraits, signal);
     }
-    // Track chat time for drives
     s.stats.lastChatTime = new Date().toISOString();
 
-    // Update stats and mood
     soul.recordInteraction('chat');
     engine.applyEvent(message.length > 50 ? 'chat-long' : 'chat-received');
     soul.save();
 
-    return {
-      ok: true,
-      reply,
-      mood: { ...soul.get().mood },
-    };
+    // Compact if approaching limit
+    if (session.needsCompaction()) {
+      session.compact().catch((err) => console.error('[observer] compaction failed:', err.message));
+    }
+
+    return { ok: true, reply, mood: { ...soul.get().mood } };
   } catch (err) {
     console.error('[observer] chat failed:', err.message);
     return { ok: false, error: err.message };
   }
 }
 
-/** Get the last screen summary (for diary context) */
+// ---------------------------------------------------------------------------
+// Get chat history for UI
+// ---------------------------------------------------------------------------
+function getChatHistory() {
+  return session.getHistory();
+}
+
 function getLastScreenSummary() {
   return _lastScreenSummary;
 }
 
-export default { observe, chat, getLastScreenSummary };
+export default { init, observe, heartbeat, chat, getChatHistory, getLastScreenSummary };

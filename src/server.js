@@ -86,36 +86,20 @@ routes['POST /chat'] = async (req, res) => {
   json(res, result);
 };
 
-// GET /proactive — poll for unprompted pet messages
+// GET /proactive — heartbeat: pet decides if it wants to say something
 routes['GET /proactive'] = async (_req, res) => {
-  // Generate context-aware proactive messages (morning, break, night)
-  engine.generateProactiveContext();
-
-  // Drive: pet wants to ask the user a question
-  const s = soul.get();
-  const cfg = config.get();
-  const lastChat = s.stats.lastChatTime ? new Date(s.stats.lastChatTime).getTime() : 0;
-  const hoursSinceChat = (Date.now() - lastChat) / 3600000;
-
-  // If no proactive message and pet is curious (hasn't chatted in 2+ hours), ask a question
-  let msg = engine.getProactiveMessage();
-  if (!msg && hoursSinceChat > 2 && Math.random() < 0.3) {
-    const question = (await import('./personality.js')).default.pickQuestion(
-      cfg.language || 'zh',
-      s.askedQuestions || [],
-    );
-    if (question) {
-      msg = question;
-      s.askedQuestions = [...(s.askedQuestions || []), question];
-      soul.save();
-    }
-  }
-
-  if (msg) {
-    json(res, { ok: true, commentary: msg, mood: { ...soul.get().mood }, action: 'speech-bubble', duration: 10000 });
+  const result = await observer.heartbeat();
+  if (result && result.commentary) {
+    json(res, { ok: true, commentary: result.commentary, mood: { ...soul.get().mood }, action: result.action || 'speech-bubble', duration: 10000 });
   } else {
     json(res, { ok: true, commentary: '', action: 'none' });
   }
+};
+
+// GET /chat/history — get full conversation history for chat window
+routes['GET /chat/history'] = async (_req, res) => {
+  const history = observer.getChatHistory();
+  json(res, { ok: true, ...history });
 };
 
 // POST /mood/event — report lifecycle events
@@ -511,6 +495,9 @@ async function main() {
   // Initialize memory (triggers DB creation)
   memory.getDb();
   console.log(`[clawd-soul] memories: ${memory.count()}`);
+
+  // Initialize chat session (load from disk)
+  observer.init();
 
   // Start diary timer
   diary.startTimer();
