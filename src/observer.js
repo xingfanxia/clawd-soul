@@ -3,9 +3,10 @@ import provider from './provider.js';
 import memory from './memory.js';
 import engine from './engine.js';
 import soul from './soul-file.js';
-import prompts from './prompts.js';
 import personality from './personality.js';
 import session from './chat-session.js';
+import promptEngine from './prompt-engine.js';
+import activeMemory from './active-memory.js';
 
 // ---------------------------------------------------------------------------
 // Rate limiting
@@ -14,45 +15,6 @@ let _lastObserveTime = 0;
 let _lastScreenSummary = '';
 
 const MIN_OBSERVE_INTERVAL_MS = 15000;
-
-// ---------------------------------------------------------------------------
-// Semantic memory extraction
-// ---------------------------------------------------------------------------
-const _appUsageCount = new Map();
-
-function extractSemanticMemory(app, summary) {
-  if (app) {
-    _appUsageCount.set(app, (_appUsageCount.get(app) || 0) + 1);
-    if (_appUsageCount.get(app) === 3) {
-      soul.addSemanticMemory(`Owner frequently uses ${app}`);
-    }
-  }
-  const lower = (summary || '').toLowerCase();
-  if (lower.includes('code') || lower.includes('github')) soul.addSemanticMemory('Owner is a programmer');
-  if (lower.includes('bilibili') || lower.includes('b站')) soul.addSemanticMemory('Owner watches Bilibili');
-  if (lower.includes('youtube')) soul.addSemanticMemory('Owner watches YouTube');
-}
-
-function extractFromChat(message) {
-  const lower = message.toLowerCase();
-  const patterns = [
-    /my name is|i am|i'm|我叫|我是/,
-    /i like|i love|i enjoy|我喜欢|我爱|我最爱/,
-    /i work|my job|我工作|我做|我在做|在做/,
-    /i hate|i don't like|我讨厌|我不喜欢/,
-    /i live|i'm from|我住|我来自/,
-    /i study|i'm learning|我在学/,
-    /my favorite|最喜欢|最爱的/,
-    /today i|今天我/,
-  ];
-  for (const p of patterns) {
-    if (p.test(lower)) {
-      soul.addSemanticMemory(message.slice(0, 120));
-      soul.save();
-      break;
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // App categorization
@@ -76,6 +38,26 @@ function categorizeApp(appName) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared context builder — assembles the ctx object for prompt-engine
+// ---------------------------------------------------------------------------
+function buildContext(foregroundApp) {
+  engine.tickMoodDecay();
+  const pCtx = engine.getPersonalityContext();
+  const s = soul.get();
+  return {
+    ...pCtx,
+    longTermMemory: s.longTermMemory || [],
+    activeMemories: null, // set per-method after recall()
+    recentObservations: session.getRecentObservationSummaries(5),
+    timeOfDay: engine.getTimeOfDay(),
+    currentDrive: null,
+    recentPetMessages: session.getRecentAssistantMessages(3),
+    appCategory: categorizeApp(foregroundApp),
+    dailySummary: null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Initialize — load chat session from disk
 // ---------------------------------------------------------------------------
 function init() {
@@ -85,9 +67,6 @@ function init() {
 
 // ---------------------------------------------------------------------------
 // Observation — feeds SILENTLY into the conversation context
-//
-// The pet sees the screen and REMEMBERS what it saw, but does NOT
-// automatically comment. Commentary happens via heartbeat or chat.
 // ---------------------------------------------------------------------------
 async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
   const now = Date.now();
@@ -104,8 +83,6 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
   const timing = engine.recordObservationTime();
   if (timing.gap > 0) engine.handleUserReturn(timing.gap);
   engine.tickMoodDecay();
-
-  const appCategory = categorizeApp(foregroundApp);
 
   // Ask AI to describe the screen briefly (for context, NOT for display)
   const descMessages = [
@@ -138,7 +115,8 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
     mood: soul.get().mood,
   });
 
-  extractSemanticMemory(foregroundApp, screenSummary);
+  // Extract and store facts from the observation
+  activeMemory.storeExtractedFacts(null, screenSummary).catch(() => {});
   soul.recordInteraction('observation');
 
   // Compact session if needed
@@ -149,69 +127,44 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
   // Save soul periodically
   if (soul.get().stats.totalObservations % 10 === 0) soul.save();
 
-  return { ok: true, action: 'silent', commentary: '', summary: screenSummary };
+  return { ok: true, action: 'silent', commentary: '', summary: screenSummary, mood: { ...soul.get().mood } };
 }
 
 // ---------------------------------------------------------------------------
 // React to screen — user clicked the pet, read screen + respond in ONE call
-//
-// Unlike silent observations, this sends the screenshot directly to the AI
-// along with the full conversation context, and asks for a friend-like
-// reaction. The AI sees EXACTLY what the user sees.
 // ---------------------------------------------------------------------------
 async function reactToScreen({ screenshot, foregroundApp, windowTitle }) {
-  if (!config.hasApiKey()) {
-    return { ok: false, error: 'No API key configured' };
-  }
+  if (!config.hasApiKey()) return { ok: false, error: 'No API key configured' };
 
-  engine.tickMoodDecay();
-  const ctx = engine.getPersonalityContext();
+  const ctx = buildContext(foregroundApp);
   const isZh = ctx.language === 'zh';
 
-  // Build system prompt — the pet's character + conversation history
-  const systemPrompt = prompts.chat({
-    ...ctx,
-    recentObservations: [],
-    dailyContext: '',
-  });
+  // Active Memory: recall relevant memories
+  ctx.activeMemories = await activeMemory.recall(
+    `${foregroundApp} ${windowTitle} ${_lastScreenSummary}`,
+    { language: ctx.language },
+  );
 
-  // Get conversation context from session
-  const messages = session.getMessagesForAI(systemPrompt);
+  // Build messages with prompt engine
+  const messages = promptEngine.buildMessages('react', ctx, session);
 
-  // Add the screenshot as the user's "turn" — the pet sees the screen
-  // The full conversation history is already in `messages` from session,
-  // so the AI knows what it already said and should EXTEND the topic.
-  const screenContent = [
+  // Add screenshot as user turn
+  messages.push({ role: 'user', content: [
     { type: 'text', text: isZh
-      ? `[主人又点了你一下]\n当前应用: ${foregroundApp || '未知'}\n窗口标题: ${windowTitle || '未知'}\n\n看看屏幕，接着刚才的话题继续聊。如果屏幕内容变了，就聊新内容。如果没变，就换个角度深入之前的话题——比如问问主人的看法、分享你自己的想法、或者吐槽。不要重复你已经说过的话。不要说"慢慢来""加油"之类的废话。`
-      : `[Owner clicked you again]\nApp: ${foregroundApp || 'unknown'}\nWindow: ${windowTitle || 'unknown'}\n\nLook at the screen and continue the conversation. If screen changed, talk about the new content. If not, go deeper on the topic — ask the owner's opinion, share a new thought, or riff on it. Don't repeat what you already said. Don't say generic encouragement.`,
-    },
-  ];
-
-  if (screenshot) {
-    screenContent.push({
-      type: 'image_url',
-      image_url: { url: `data:image/jpeg;base64,${screenshot}`, detail: 'auto' },
-    });
-  }
-
-  messages.push({ role: 'user', content: screenContent });
+      ? `[主人点了你] 应用: ${foregroundApp || '未知'}\n窗口: ${windowTitle || ''}\n看看屏幕，接着聊。`
+      : `[Owner clicked you] App: ${foregroundApp || 'unknown'}\nWindow: ${windowTitle || ''}\nLook at screen, continue talking.` },
+    ...(screenshot ? [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${screenshot}`, detail: 'auto' } }] : []),
+  ]});
 
   try {
-    const reply = await provider.chat(messages, {
-      purpose: 'chat',
-      maxTokens: 300,
-      temperature: 0.9,
-    });
-
-    // Add to session as assistant message
+    const reply = await provider.chat(messages, { purpose: 'chat', maxTokens: 150, temperature: 0.9 });
     session.addAssistant(reply);
-
-    // Also add the observation to session context
     session.addObservation(`${foregroundApp}: ${windowTitle}`);
-
     soul.recordInteraction('observation');
     engine.applyEvent('observation-interesting');
+
+    // Extract and store facts from this interaction
+    activeMemory.storeExtractedFacts(null, reply).catch(() => {});
 
     return { ok: true, reply, mood: { ...soul.get().mood } };
   } catch (err) {
@@ -222,10 +175,6 @@ async function reactToScreen({ screenshot, foregroundApp, windowTitle }) {
 
 // ---------------------------------------------------------------------------
 // Heartbeat — the pet's "inner voice" that decides to speak or not
-//
-// Called every ~30 min. Reviews accumulated context (observations, time,
-// drives) and decides if it wants to say something to the user.
-// This is what makes the pet feel ALIVE — it initiates, not just reacts.
 // ---------------------------------------------------------------------------
 async function heartbeat() {
   if (!config.hasApiKey()) return null;
@@ -233,14 +182,14 @@ async function heartbeat() {
   engine.tickMoodDecay();
   engine.generateProactiveContext();
 
-  // Check if there's a proactive message (morning greeting, break nudge, etc.)
+  // Check proactive messages first
   const proactive = engine.getProactiveMessage();
   if (proactive) {
     session.addAssistant(proactive);
     return { commentary: proactive, action: 'speech-bubble' };
   }
 
-  // Check drives — does the pet want to ask a question?
+  // Check drives
   const s = soul.get();
   const cfg = config.get();
   const lastChat = s.stats.lastChatTime ? new Date(s.stats.lastChatTime).getTime() : 0;
@@ -256,22 +205,14 @@ async function heartbeat() {
     }
   }
 
-  // Otherwise, let the AI decide if it wants to say something
-  // based on the accumulated context
-  const ctx = engine.getPersonalityContext();
-  const systemPrompt = prompts.chat({
-    ...ctx,
-    recentObservations: [],
-    dailyContext: '',
-  });
+  // Let AI decide
+  const ctx = buildContext(null);
+  ctx.activeMemories = await activeMemory.recall(
+    session.getRecentObservationSummaries(3).join(' '),
+    { language: ctx.language },
+  );
 
-  const messages = session.getMessagesForAI(systemPrompt);
-  messages.push({
-    role: 'system',
-    content: ctx.language === 'zh'
-      ? '根据上面的对话和你最近观察到的事情，你现在想不想主动跟主人说点什么？如果想说就说，不想说就回复"[沉默]"。说话要自然，像朋友发微信。'
-      : 'Based on the conversation above and what you\'ve observed, do you want to say something to your owner? If yes, just say it. If not, reply "[silent]". Be natural, like texting a friend.',
-  });
+  const messages = promptEngine.buildMessages('heartbeat', ctx, session);
 
   try {
     const reply = await provider.chat(messages, { purpose: 'chat', maxTokens: 200, temperature: 0.95 });
@@ -288,38 +229,21 @@ async function heartbeat() {
 // Chat — continuous conversation using full persistent context
 // ---------------------------------------------------------------------------
 async function chat(message) {
-  if (!config.hasApiKey()) {
-    return { ok: false, error: 'No API key configured' };
-  }
+  if (!config.hasApiKey()) return { ok: false, error: 'No API key configured' };
 
-  engine.tickMoodDecay();
+  const ctx = buildContext(null);
 
-  const ctx = engine.getPersonalityContext();
+  // Active Memory: recall relevant to this message
+  ctx.activeMemories = await activeMemory.recall(message, { language: ctx.language });
 
-  // Add user message to persistent session
   session.addUser(message);
 
-  // Build system prompt
-  const systemPrompt = prompts.chat({
-    ...ctx,
-    recentObservations: [],
-    dailyContext: '',
-  });
-
-  // Get full conversation from session (includes summary + all history)
-  const messages = session.getMessagesForAI(systemPrompt);
+  const messages = promptEngine.buildMessages('chat', ctx, session);
 
   try {
-    const reply = await provider.chat(messages, {
-      purpose: 'chat',
-      maxTokens: 300,
-      temperature: 0.9,
-    });
-
-    // Add reply to persistent session
+    const reply = await provider.chat(messages, { purpose: 'chat', maxTokens: 200, temperature: 0.9 });
     session.addAssistant(reply);
 
-    // Store in episodic memory too (for search)
     await memory.addEpisode({
       type: 'chat',
       summary: `User: "${message.slice(0, 80)}" → Pet: "${reply.slice(0, 80)}"`,
@@ -328,19 +252,17 @@ async function chat(message) {
     });
 
     // Learn + evolve
-    extractFromChat(message);
+    await activeMemory.storeExtractedFacts(message, reply);
     const signals = personality.detectSignals(message);
     const s = soul.get();
     for (const signal of signals) {
       s.evolvedTraits = personality.evolveTraits(s.evolvedTraits, signal);
     }
     s.stats.lastChatTime = new Date().toISOString();
-
     soul.recordInteraction('chat');
     engine.applyEvent(message.length > 50 ? 'chat-long' : 'chat-received');
     soul.save();
 
-    // Compact if approaching limit
     if (session.needsCompaction(provider.getUsageStats().lastPromptTokens)) {
       session.compact().catch((err) => console.error('[observer] compaction failed:', err.message));
     }
@@ -348,6 +270,101 @@ async function chat(message) {
     return { ok: true, reply, mood: { ...soul.get().mood } };
   } catch (err) {
     console.error('[observer] chat failed:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding — first-meeting conversation to learn about the user
+// ---------------------------------------------------------------------------
+async function onboardingChat(message, history = []) {
+  if (!config.hasApiKey()) return { ok: false, error: 'No API key configured' };
+
+  const cfg = config.get();
+  const s = soul.get();
+
+  const ctx = {
+    petName: cfg.petName || s.name || 'Clawd',
+    language: cfg.language || 'zh',
+    archetype: s.archetype || 'playful',
+    evolvedTraits: {},
+    mood: { ...s.mood },
+    trust: s.trust,
+    longTermMemory: [],
+    activeMemories: null,
+    recentObservations: [],
+    timeOfDay: engine.getTimeOfDay(),
+    currentDrive: null,
+    recentPetMessages: [],
+    appCategory: 'other',
+    dailySummary: null,
+    onboardingHistory: history,
+  };
+
+  // Add user message to history
+  if (message) {
+    ctx.onboardingHistory = [...history, { role: 'user', content: message }];
+  }
+
+  const messages = promptEngine.buildMessages('onboarding', ctx, session);
+
+  try {
+    const reply = await provider.chat(messages, {
+      purpose: 'chat',
+      maxTokens: 500,
+      temperature: 0.85,
+    });
+
+    // Check if the pet decided it's done (JSON response)
+    let done = false;
+    let result = null;
+    try {
+      // Try to parse as JSON (the pet signals completion with JSON)
+      const jsonMatch = reply.match(/\{[\s\S]*"done"\s*:\s*true[\s\S]*\}/);
+      if (jsonMatch) {
+        result = JSON.parse(jsonMatch[0]);
+        done = true;
+      }
+    } catch {}
+
+    if (done && result) {
+      // Onboarding complete — save learned info
+      if (result.archetype) {
+        const s = soul.get();
+        s.archetype = result.archetype;
+        s.evolvedTraits = {};
+        soul.save();
+      }
+      if (result.petName) {
+        const s = soul.get();
+        s.name = result.petName;
+        config.update({ petName: result.petName });
+      }
+      if (result.userName) {
+        soul.addLongTermMemory(`主人的名字是${result.userName} / Owner's name is ${result.userName}`);
+      }
+      if (result.facts && Array.isArray(result.facts)) {
+        for (const fact of result.facts.slice(0, 10)) {
+          soul.addLongTermMemory(fact);
+          await memory.addEpisode({ type: 'onboarding', summary: fact, mood: soul.get().mood });
+        }
+      }
+      soul.save();
+
+      return {
+        ok: true,
+        reply: result.reason || reply,
+        done: true,
+        archetype: result.archetype,
+        userName: result.userName,
+        petName: result.petName,
+        facts: result.facts || [],
+      };
+    }
+
+    return { ok: true, reply, done: false };
+  } catch (err) {
+    console.error('[observer] onboardingChat failed:', err.message);
     return { ok: false, error: err.message };
   }
 }
@@ -363,4 +380,4 @@ function getLastScreenSummary() {
   return _lastScreenSummary;
 }
 
-export default { init, observe, reactToScreen, heartbeat, chat, getChatHistory, getLastScreenSummary };
+export default { init, observe, reactToScreen, heartbeat, chat, onboardingChat, getChatHistory, getLastScreenSummary };

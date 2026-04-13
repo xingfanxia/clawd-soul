@@ -3,7 +3,7 @@ import provider from './provider.js';
 import memory from './memory.js';
 import engine from './engine.js';
 import soul from './soul-file.js';
-import prompts from './prompts.js';
+import promptEngine from './prompt-engine.js';
 
 // ---------------------------------------------------------------------------
 // Diary timer
@@ -60,14 +60,23 @@ async function generate(date) {
     .map((e) => e.summary)
     .slice(0, 10);
 
-  const ctx = engine.getPersonalityContext();
   const s = soul.get();
+  const cfg = config.get();
 
-  const systemPrompt = prompts.diary({
-    ...ctx,
-    todayObservations,
-    todayChats,
-  });
+  const ctx = {
+    petName: cfg.petName || s.name,
+    language: cfg.language || 'zh',
+    archetype: s.archetype || 'playful',
+    evolvedTraits: { ...s.evolvedTraits },
+    mood: { ...s.mood },
+    trust: s.trust,
+    longTermMemory: [...(s.longTermMemory || [])],
+    timeOfDay: engine.getTimeOfDay(),
+    recentObservations: todayObservations,
+    dailySummary: todayChats.length > 0 ? todayChats.join('\n') : null,
+  };
+
+  const systemPrompt = promptEngine.build('diary', ctx);
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -88,6 +97,11 @@ async function generate(date) {
     soul.recordInteraction('diary');
     engine.applyEvent('diary-written');
     soul.save();
+
+    // Consolidate memories after diary (nightly "dreaming" pass)
+    engine.consolidateMemories().catch((err) => {
+      console.error('[diary] post-diary consolidation failed:', err.message);
+    });
 
     return { ok: true, date: targetDate, content };
   } catch (err) {

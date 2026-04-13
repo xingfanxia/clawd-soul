@@ -305,10 +305,113 @@ function close() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Jaccard similarity (word-level)
+// ---------------------------------------------------------------------------
+
+/** Tokenize text into a set of lowercase words, handling CJK characters */
+function tokenize(text) {
+  if (!text) return new Set();
+  const tokens = new Set();
+  // Split on whitespace, then further split CJK chars as individual tokens
+  const parts = text.toLowerCase().split(/\s+/);
+  for (const part of parts) {
+    // Extract CJK characters as individual tokens
+    const cjkChars = part.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g);
+    if (cjkChars) {
+      for (const ch of cjkChars) tokens.add(ch);
+    }
+    // Extract non-CJK word segments (len > 1)
+    const nonCjk = part.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g, ' ').split(/\s+/);
+    for (const word of nonCjk) {
+      if (word.length > 1) tokens.add(word);
+    }
+  }
+  return tokens;
+}
+
+/** Word-level Jaccard similarity between two texts */
+function jaccardSimilarity(textA, textB) {
+  const setA = tokenize(textA);
+  const setB = tokenize(textB);
+  if (setA.size === 0 && setB.size === 0) return 1;
+  if (setA.size === 0 || setB.size === 0) return 0;
+
+  let intersectionSize = 0;
+  for (const token of setA) {
+    if (setB.has(token)) intersectionSize += 1;
+  }
+  const unionSize = setA.size + setB.size - intersectionSize;
+  return unionSize === 0 ? 0 : intersectionSize / unionSize;
+}
+
+// ---------------------------------------------------------------------------
+// MMR (Maximal Marginal Relevance) selection
+// ---------------------------------------------------------------------------
+
+/** Select results maximizing relevance while penalizing redundancy */
+function mmrSelect(results, limit) {
+  if (results.length <= limit) return results;
+
+  const selected = [];
+  const remaining = [...results];
+
+  // Greedily pick the highest-scoring first
+  remaining.sort((a, b) => b.combinedScore - a.combinedScore);
+  selected.push(remaining.shift());
+
+  while (selected.length < limit && remaining.length > 0) {
+    let bestIdx = -1;
+    let bestMmr = -Infinity;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const candidate = remaining[i];
+      const relevance = candidate.combinedScore;
+
+      // Max similarity to any already-selected result
+      const maxSim = selected.reduce(
+        (max, sel) => Math.max(max, jaccardSimilarity(candidate.summary, sel.summary)),
+        0,
+      );
+
+      const mmrScore = 0.7 * relevance - 0.3 * maxSim;
+      if (mmrScore > bestMmr) {
+        bestMmr = mmrScore;
+        bestIdx = i;
+      }
+    }
+
+    selected.push(remaining.splice(bestIdx, 1)[0]);
+  }
+
+  return selected;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-recall with temporal decay + MMR
+// ---------------------------------------------------------------------------
+
+/** Enhanced search with temporal decay and MMR diversity */
+async function autoRecall(query, limit = 5) {
+  const overFetched = await search(query, limit * 2);
+  if (!overFetched || overFetched.length === 0) return [];
+
+  const now = Date.now();
+
+  // Apply temporal decay (immutable — create new scored array)
+  const decayed = overFetched.map((result) => {
+    const ageDays = (now - new Date(result.timestamp).getTime()) / 86400000;
+    return { ...result, combinedScore: result.combinedScore * Math.exp(-0.01 * ageDays) };
+  });
+
+  // Apply MMR for diversity, then return top `limit`
+  return mmrSelect(decayed, limit);
+}
+
 export default {
   addEpisode, getRecent, getRecentByType,
   search, searchBM25,
   saveDiary, getDiary, listDiary,
   getTodayEpisodes, count, close,
-  getDb,
+  getDb, autoRecall,
 };

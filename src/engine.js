@@ -1,5 +1,7 @@
 import config from './config.js';
 import soul from './soul-file.js';
+import memory from './memory.js';
+import provider from './provider.js';
 
 // ---------------------------------------------------------------------------
 // Mood decay — moods drift toward baseline over time
@@ -208,18 +210,6 @@ function handleUserReturn(gapMs) {
   setProactiveMessage(msg, 2);
 }
 
-/** Should the pet comment on this observation? */
-function shouldComment() {
-  const s = soul.get();
-  const cfg = config.get();
-  const level = s.proactivenessOverride || cfg.proactivenessLevel;
-  const threshold = PROACTIVE_THRESHOLDS[level] ?? 0.5;
-
-  // Score based on mood
-  const score = (s.mood.energy * 0.4 + s.mood.interest * 0.4 + s.mood.affection * 0.2);
-  return score >= threshold;
-}
-
 /** Get the current proactiveness level name */
 function getProactivenessLevel() {
   const s = soul.get();
@@ -240,16 +230,58 @@ function getPersonalityContext() {
     language: cfg.language,
     mood: { ...s.mood },
     trust: s.trust,
-    semanticMemory: [...s.semanticMemory],
+    longTermMemory: [...(s.longTermMemory || [])],
     archetype: s.archetype || 'playful',
     evolvedTraits: { ...s.evolvedTraits },
   };
 }
 
+// ---------------------------------------------------------------------------
+// Nightly memory consolidation — "dreaming" pass
+// ---------------------------------------------------------------------------
+
+async function consolidateMemories() {
+  const todayEpisodes = memory.getTodayEpisodes();
+  if (todayEpisodes.length === 0) return { ok: true, promoted: 0 };
+
+  const cfg = config.get();
+  const isZh = (cfg.language || 'zh') === 'zh';
+
+  const prompt = isZh
+    ? '回顾今天的观察和对话。选出3-5个最值得长期记住的关于主人的事实。重点：个人偏好、生活事件、关系进展、重复出现的模式。每行一条，简洁。'
+    : 'Review today\'s observations and conversations. Pick 3-5 facts most worth remembering long-term about the owner. Focus on: personal preferences, life events, relationship milestones, recurring patterns. One fact per line, concise.';
+
+  try {
+    const result = await provider.chat([
+      { role: 'system', content: prompt },
+      { role: 'user', content: todayEpisodes.map((e) => e.summary).join('\n') },
+    ], { purpose: 'reason', maxTokens: 300, temperature: 0.3 });
+
+    const facts = result.split('\n').filter((f) => f.trim().length > 5);
+    let promoted = 0;
+    for (const fact of facts.slice(0, 5)) {
+      const clean = fact.replace(/^[-•*\d.]\s*/, '').trim();
+      if (clean.length > 5) {
+        soul.addLongTermMemory(clean);
+        promoted++;
+      }
+    }
+
+    soul.get().lastConsolidation = new Date().toISOString();
+    soul.save();
+
+    console.log(`[engine] consolidated ${promoted} memories`);
+    return { ok: true, promoted };
+  } catch (err) {
+    console.error('[engine] consolidation failed:', err.message);
+    return { ok: false, error: err.message, promoted: 0 };
+  }
+}
+
 export default {
   tickMoodDecay,
   applyEvent,
-  shouldComment,
+  consolidateMemories,
   setProactiveMessage,
   getProactiveMessage,
   getProactivenessLevel,

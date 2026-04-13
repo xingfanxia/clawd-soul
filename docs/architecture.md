@@ -28,13 +28,15 @@ clawd-on-desk (Electron)              clawd-soul (HTTP :23456)
 | `server.js` | HTTP routing, .env loader, port discovery, graceful shutdown |
 | `config.js` | Config schema, load/save `~/.clawd/config.json`, env var overrides |
 | `provider.js` | 4 AI providers (Azure/OpenAI/Gemini/Claude) via node:https, token tracking |
-| `observer.js` | Observation (silent), /react (screen read), heartbeat, chat handler |
-| `chat-session.js` | Persistent JSONL conversation, compaction at 500k tokens, cache optimization |
-| `memory.js` | SQLite + FTS5 + sqlite-vec, episodic memories, hybrid search |
-| `personality.js` | 5 archetypes, trait evolution, drive system, question pool |
-| `prompts.js` | Archetype-aware prompt templates (observation, chat, diary) |
-| `engine.js` | Mood decay, trust growth, proactiveness, time awareness, morning/break/night |
-| `soul-file.js` | Soul state persistence (`~/.clawd/soul.json`), export/import |
+| `observer.js` | Slim orchestrator: delegates to prompt-engine + active-memory |
+| `chat-session.js` | Persistent JSONL, pre-compaction memory flush, cache optimization |
+| `memory.js` | SQLite + FTS5 + sqlite-vec, hybrid search, autoRecall with temporal decay + MMR |
+| `personality.js` | Loads soul files, trait evolution, drives, signal detection |
+| `prompt-engine.js` | 8-layer prompt assembly, cache-optimized, per-turn adaptive |
+| `active-memory.js` | Auto-recall: search memory before every reply, extract personal facts |
+| `souls/*.md` | 5 archetype character files (playful, curious, caring, snarky, chill) |
+| `engine.js` | Mood decay, trust, proactiveness, nightly memory consolidation |
+| `soul-file.js` | Soul v3: longTermMemory, consolidation tracking |
 | `diary.js` | Daily diary generation at 23:00, context gathering |
 
 ## Data Flow

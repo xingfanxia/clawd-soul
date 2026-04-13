@@ -86,6 +86,16 @@ routes['POST /chat'] = async (req, res) => {
   json(res, result);
 };
 
+// POST /onboarding/chat — conversational onboarding (first meeting)
+routes['POST /onboarding/chat'] = async (req, res) => {
+  const body = await readBody(req);
+  if (!body) return json(res, { ok: false, error: 'Invalid JSON' }, 400);
+
+  const { message, history } = body;
+  const result = await observer.onboardingChat(message, history || []);
+  json(res, result);
+};
+
 // POST /react — user clicked pet, read screen + respond as friend (screenshot included)
 routes['POST /react'] = async (req, res) => {
   const body = await readBody(req);
@@ -156,6 +166,12 @@ routes['GET /memory/recent'] = async (req, res) => {
   const limit = parseInt(url.searchParams.get('limit') || '20', 10);
   const episodes = memory.getRecent(limit);
   json(res, { ok: true, episodes });
+};
+
+// POST /memory/consolidate — manually trigger nightly memory consolidation
+routes['POST /memory/consolidate'] = async (_req, res) => {
+  const result = await engine.consolidateMemories();
+  json(res, result);
 };
 
 // GET /memory/search — search memories

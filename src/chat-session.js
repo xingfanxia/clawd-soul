@@ -11,6 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import config from './config.js';
 import provider from './provider.js';
+import memory from './memory.js';
+import soul from './soul-file.js';
 
 const HISTORY_FILE = () => path.join(config.DATA_DIR, 'chat-history.jsonl');
 const SUMMARY_FILE = () => path.join(config.DATA_DIR, 'chat-summary.json');
@@ -249,6 +251,42 @@ function needsCompaction(lastPromptTokens) {
 }
 
 /**
+ * Flush important facts from messages to durable memory before compaction.
+ * Extracts personal info, preferences, promises, and relationship moments.
+ * Errors are swallowed — memory flush must never block compaction.
+ */
+async function flushToMemory(messages) {
+  // Only flush if we have meaningful messages to extract from
+  const chatMessages = messages.filter(m => m.role === 'user' || m.role === 'assistant');
+  if (chatMessages.length < 4) return; // too few to extract from
+
+  const cfg = config.get();
+  const isZh = cfg.language === 'zh';
+
+  const text = chatMessages
+    .map(m => m.role === 'user' ? `用户: ${m.content}` : `宠物: ${m.content}`)
+    .join('\n');
+
+  const prompt = isZh
+    ? '从这段对话中提取最重要的事实，每行一条。重点关注：1) 用户分享的个人信息（名字、喜好、工作）2) 用户的情绪和感受 3) 重要的承诺或约定。最多5条，简洁。'
+    : 'Extract the most important facts from this conversation, one per line. Focus on: 1) Personal info the user shared (name, preferences, work) 2) User emotions and feelings 3) Important promises or commitments. Max 5 items, concise.';
+
+  const result = await provider.chat([
+    { role: 'system', content: prompt },
+    { role: 'user', content: text },
+  ], { purpose: 'reason', maxTokens: 300, temperature: 0.2 });
+
+  const facts = result.split('\n').filter(f => f.trim().length > 5);
+  for (const fact of facts.slice(0, 5)) {
+    await memory.addEpisode({
+      type: 'memory-flush',
+      summary: fact.replace(/^[-•*\d.]\s*/, '').trim(),
+      mood: soul.get().mood,
+    });
+  }
+}
+
+/**
  * Compact the conversation — summarize older messages, keep recent ones.
  * Called automatically when approaching token limit.
  */
@@ -257,6 +295,13 @@ async function compact() {
 
   const toSummarize = _messages.slice(0, -KEEP_RECENT_MESSAGES);
   const toKeep = _messages.slice(-KEEP_RECENT_MESSAGES);
+
+  // Flush important facts to durable memory before compacting
+  try {
+    await flushToMemory(toSummarize);
+  } catch (err) {
+    console.error('[chat-session] memory flush failed (continuing with compaction):', err.message);
+  }
 
   // Build text of messages to summarize
   const existingSummary = _summary ? `之前的总结：${_summary.text}\n\n` : '';
@@ -276,8 +321,8 @@ async function compact() {
       {
         role: 'system',
         content: isZh
-          ? '你是一个对话总结助手。请将以下对话总结为一段简洁的中文摘要，保留：1) 用户分享的个人信息和偏好 2) 重要的对话话题 3) 宠物和用户之间的关系进展 4) 任何承诺或后续话题。不超过500字。'
-          : 'Summarize this conversation concisely. Preserve: 1) Personal info the user shared 2) Key conversation topics 3) Relationship development 4) Any promises or follow-ups. Under 500 words.',
+          ? '你是一个对话总结助手。请将以下对话总结为一段简洁的中文摘要，保留：1) 用户分享的个人信息和偏好 2) 重要的对话话题 3) 宠物和用户之间的关系进展 4) 任何承诺或后续话题。保留所有名字、文件路径、URL、日期和具体数字，不要改写专有名词或技术术语。保留对话的情感基调——记录什么让用户开心、沮丧或兴奋。不超过500字。'
+          : 'Summarize this conversation concisely. Preserve: 1) Personal info the user shared 2) Key conversation topics 3) Relationship development 4) Any promises or follow-ups. Preserve all names, file paths, URLs, dates, and specific numbers exactly as written. Do not paraphrase proper nouns or technical terms. Preserve the emotional tone of the conversations — note what made the user happy, frustrated, or excited. Under 500 words.',
       },
       {
         role: 'user',
@@ -314,9 +359,36 @@ function clear() {
   try { fs.unlinkSync(SUMMARY_FILE()); } catch {}
 }
 
+/**
+ * Get the last N assistant messages (for anti-repetition in prompt-engine).
+ * @param {number} [limit=3] - number of recent assistant messages to return
+ * @returns {string[]} array of assistant message content strings
+ */
+function getRecentAssistantMessages(limit = 3) {
+  if (!_loaded) load();
+  return _messages
+    .filter(m => m.role === 'assistant')
+    .slice(-limit)
+    .map(m => m.content);
+}
+
+/**
+ * Get the last N observation summaries (for prompt-engine context).
+ * @param {number} [limit=5] - number of recent observations to return
+ * @returns {string[]} array of observation summary strings (without [观察] prefix)
+ */
+function getRecentObservationSummaries(limit = 5) {
+  if (!_loaded) load();
+  return _messages
+    .filter(m => m.type === 'observation')
+    .slice(-limit)
+    .map(m => m.content.replace(/^\[观察\]\s*/, ''));
+}
+
 export default {
   load, append, addUser, addAssistant, addObservation, addEvent,
   getMessagesForAI, getHistory,
   needsCompaction, compact, estimateChars, estimateTokens, clear,
+  getRecentAssistantMessages, getRecentObservationSummaries,
   TOKEN_LIMIT,
 };

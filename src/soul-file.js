@@ -8,7 +8,7 @@ const SOUL_PATH = () => path.join(config.DATA_DIR, 'soul.json');
 // Default soul — a brand-new Clawd
 // ---------------------------------------------------------------------------
 const DEFAULT_SOUL = () => ({
-  version: 2,
+  version: 3,
   name: config.get().petName || 'Clawd',
   createdAt: new Date().toISOString(),
 
@@ -28,21 +28,20 @@ const DEFAULT_SOUL = () => ({
   // Trust grows with interactions (0.0–1.0)
   trust: 0.0,
 
-  // Semantic memory — key phrases the pet remembers about the user
-  semanticMemory: [],
+  // Long-term memory — curated facts about the user (max 100)
+  longTermMemory: [],
+
+  // Timestamp of last memory consolidation
+  lastConsolidation: null,
 
   // Questions the pet has already asked (for drive system)
   askedQuestions: [],
-
-  // Catchphrases the pet has developed
-  catchphrases: [],
 
   // Stats
   stats: {
     totalObservations: 0,
     totalChats: 0,
     totalDiaryEntries: 0,
-    daysActive: 0,
     firstInteraction: null,
     lastInteraction: null,
     lastChatTime: null,
@@ -69,6 +68,22 @@ function load() {
       const raw = JSON.parse(fs.readFileSync(soulPath, 'utf8'));
       // Merge with defaults to pick up any new fields from upgrades
       _soul = { ...DEFAULT_SOUL(), ...raw, mood: { ...DEFAULT_SOUL().mood, ...raw.mood }, stats: { ...DEFAULT_SOUL().stats, ...raw.stats } };
+
+      // --- v1/v2 → v3 migration ---
+      if (_soul.version < 3) {
+        // Rename semanticMemory → longTermMemory
+        if (Array.isArray(_soul.semanticMemory)) {
+          _soul.longTermMemory = _soul.semanticMemory;
+        }
+        delete _soul.semanticMemory;
+        // Remove dead fields
+        delete _soul.catchphrases;
+        if (_soul.stats) delete _soul.stats.daysActive;
+        // Ensure new fields exist
+        if (_soul.lastConsolidation === undefined) _soul.lastConsolidation = null;
+        _soul.version = 3;
+        save();
+      }
     } catch {
       console.error('[soul] corrupt soul.json, creating fresh soul');
       _soul = DEFAULT_SOUL();
@@ -152,18 +167,26 @@ function recordInteraction(type) {
   if (type === 'diary') soul.stats.totalDiaryEntries++;
 }
 
-/** Add a semantic memory (deduped, max 50) */
-function addSemanticMemory(text) {
+/** Add a long-term memory (deduped, max 100, FIFO eviction, immutable) */
+function addLongTermMemory(text) {
   const soul = get();
-  if (soul.semanticMemory.includes(text)) return;
-  soul.semanticMemory.push(text);
-  if (soul.semanticMemory.length > 50) {
-    soul.semanticMemory.shift();
-  }
+  const memories = soul.longTermMemory || [];
+  // Skip if similar text already exists (exact match)
+  if (memories.includes(text)) return;
+  // Create new array (immutable) — evict oldest if at capacity
+  const updated = memories.length >= 100
+    ? [...memories.slice(1), text]
+    : [...memories, text];
+  soul.longTermMemory = updated;
+}
+
+/** @deprecated Use addLongTermMemory — backward compat alias */
+function addSemanticMemory(text) {
+  addLongTermMemory(text);
 }
 
 export default {
   load, save, get, exportSoul, importSoul,
   updateMood, setMood, addTrust,
-  recordInteraction, addSemanticMemory,
+  recordInteraction, addLongTermMemory, addSemanticMemory,
 };

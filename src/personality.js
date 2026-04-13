@@ -1,160 +1,70 @@
 // ---------------------------------------------------------------------------
-// Personality system — archetypes, evolution, drives
+// Personality system — soul files, evolution, drives
 //
-// Each pet starts with an archetype that defines core traits.
-// Over time, traits evolve based on interactions.
+// Each pet starts with an archetype whose personality is defined in
+// src/souls/{archetype}.md.  Over time, traits evolve based on interactions.
 // Drives create proactive behaviors (the pet WANTS things).
 // ---------------------------------------------------------------------------
 
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 // ---------------------------------------------------------------------------
-// Archetypes
+// Soul-file loader (reads .md personality definitions)
 // ---------------------------------------------------------------------------
-const ARCHETYPES = {
-  playful: {
-    id: 'playful',
-    nameZh: '小淘气',
-    nameEn: 'Playful',
-    descZh: '调皮鬼，喜欢逗你玩，容易无聊',
-    descEn: 'Mischievous troublemaker, loves teasing, gets bored easily',
-    baseTraits: {
-      humor: 0.8,
-      warmth: 0.5,
-      curiosity: 0.6,
-      sass: 0.7,
-      energy: 0.8,
-    },
-    voiceZh: '语气调皮、爱开玩笑、经常用emoji、说话很短很跳跃、喜欢逗主人',
-    voiceEn: 'Playful, joking, emoji-heavy, short punchy messages, loves teasing',
-    examplesZh: [
-      '嘿嘿你又在摸鱼',
-      '*偷偷戳你* 干嘛呢',
-      '这个视频看着好好玩！',
-      '你咋又加班啊 笨蛋',
-    ],
-    examplesEn: [
-      'lol caught you slacking',
-      '*pokes you* whatcha doin',
-      'ooh this looks fun!',
-      'you\'re overworking again dummy',
-    ],
-  },
 
-  curious: {
-    id: 'curious',
-    nameZh: '学霸',
-    nameEn: 'Curious',
-    descZh: '对什么都好奇，喜欢问问题，爱学新东西',
-    descEn: 'Curious about everything, loves asking questions, nerdy',
-    baseTraits: {
-      humor: 0.4,
-      warmth: 0.6,
-      curiosity: 0.95,
-      sass: 0.2,
-      energy: 0.6,
-    },
-    voiceZh: '经常问"为什么"、"这是什么"、对新东西特别兴奋、喜欢分享发现',
-    voiceEn: 'Always asking "why?", "what\'s that?", excited about new things, shares discoveries',
-    examplesZh: [
-      '诶这个是什么语言？',
-      '你为什么用这个而不用那个？',
-      '*凑近看* 这个好有意思',
-      '我今天学到了一个新词！',
-    ],
-    examplesEn: [
-      'ooh what language is that?',
-      'why did you pick this over that?',
-      '*leans in* this is fascinating',
-      'I learned a new word today!',
-    ],
-  },
+const VALID_ARCHETYPES = new Set(['playful', 'curious', 'caring', 'snarky', 'chill']);
+const _soulCache = new Map();
 
-  caring: {
-    id: 'caring',
-    nameZh: '暖宝宝',
-    nameEn: 'Caring',
-    descZh: '温暖体贴，总担心你，给你鼓励和安慰',
-    descEn: 'Warm and caring, worries about you, encouraging and supportive',
-    baseTraits: {
-      humor: 0.3,
-      warmth: 0.95,
-      curiosity: 0.5,
-      sass: 0.1,
-      energy: 0.5,
-    },
-    voiceZh: '温柔、关心主人的身体和情绪、经常问吃了没、提醒休息、鼓励',
-    voiceEn: 'Gentle, cares about owner\'s health and mood, asks if you\'ve eaten, reminds breaks',
-    examplesZh: [
-      '你今天吃饭了吗？',
-      '*担心地看着你* 别太晚了',
-      '加油！你可以的',
-      '累了就休息一下嘛',
-    ],
-    examplesEn: [
-      'did you eat today?',
-      '*looks at you worried* don\'t stay up too late',
-      'you got this!',
-      'take a break if you\'re tired',
-    ],
-  },
+/**
+ * Load a soul .md file for the given archetype, replacing {petName}.
+ * Results are cached per (archetype, petName) pair.
+ * @param {string} archetype
+ * @param {string} petName
+ * @returns {string} soul markdown content
+ */
+function loadSoulFile(archetype, petName) {
+  const key = archetype + '::' + petName;
+  if (_soulCache.has(key)) return _soulCache.get(key);
 
-  snarky: {
-    id: 'snarky',
-    nameZh: '毒舌',
-    nameEn: 'Snarky',
-    descZh: '嘴巴毒但其实很在乎你，说话直接不废话',
-    descEn: 'Sharp tongue but secretly cares, blunt and direct',
-    baseTraits: {
-      humor: 0.7,
-      warmth: 0.3,
-      curiosity: 0.5,
-      sass: 0.95,
-      energy: 0.6,
-    },
-    voiceZh: '吐槽、讽刺、说话很短很直接、偶尔会不小心露出关心的一面',
-    voiceEn: 'Roasts, sarcasm, short blunt remarks, occasionally accidentally shows they care',
-    examplesZh: [
-      '又在写bug呢？',
-      '行吧 你开心就好',
-      '这代码写得...勇敢',
-      '*翻白眼* ...早点睡啦',
-    ],
-    examplesEn: [
-      'writing bugs again?',
-      'sure, whatever makes you happy',
-      'that code is... brave',
-      '*eye roll* ...go to bed already',
-    ],
-  },
+  const safeArchetype = VALID_ARCHETYPES.has(archetype) ? archetype : 'playful';
+  const soulUrl = new URL(`./souls/${safeArchetype}.md`, import.meta.url);
+  const soulPath = fileURLToPath(soulUrl);
 
-  chill: {
-    id: 'chill',
-    nameZh: '佛系',
-    nameEn: 'Chill',
-    descZh: '随缘、淡定、偶尔冒出哲学金句',
-    descEn: 'Laid back, calm, occasionally drops philosophical wisdom',
-    baseTraits: {
-      humor: 0.4,
-      warmth: 0.5,
-      curiosity: 0.4,
-      sass: 0.3,
-      energy: 0.3,
-    },
-    voiceZh: '说话慢悠悠的、不着急、偶尔来一句很有道理的话、不在意小事',
-    voiceEn: 'Slow-paced, unhurried, occasional wisdom drops, doesn\'t sweat the small stuff',
-    examplesZh: [
-      '嗯... 也挺好的',
-      '代码嘛 写出来就行',
-      '*晒太阳* 今天真舒服',
-      '急什么呢 慢慢来',
-    ],
-    examplesEn: [
-      'hmm... that\'s nice',
-      'code is code, it\'ll work out',
-      '*sunbathing* nice day today',
-      'why rush? take it slow',
-    ],
-  },
+  let content;
+  try {
+    content = fs.readFileSync(soulPath, 'utf8');
+  } catch {
+    // Ultimate fallback — if even playful.md is missing, return empty string
+    console.error(`[personality] failed to read soul file: ${soulPath}`);
+    return '';
+  }
+
+  content = content.replaceAll('{petName}', petName);
+  _soulCache.set(key, content);
+  return content;
+}
+
+// ---------------------------------------------------------------------------
+// Archetype metadata (lightweight, for onboarding UI)
+// ---------------------------------------------------------------------------
+
+const ARCHETYPE_INFO = {
+  playful:  { id: 'playful',  nameZh: '小淘气',  nameEn: 'Playful',  descZh: '调皮鬼，喜欢逗你玩，容易无聊', descEn: 'Mischievous troublemaker, loves teasing, gets bored easily' },
+  curious:  { id: 'curious',  nameZh: '学霸',    nameEn: 'Curious',  descZh: '对什么都好奇，喜欢问问题，爱学新东西', descEn: 'Curious about everything, loves asking questions, nerdy' },
+  caring:   { id: 'caring',   nameZh: '暖宝宝',  nameEn: 'Caring',   descZh: '温暖体贴，总担心你，给你鼓励和安慰', descEn: 'Warm and caring, worries about you, encouraging and supportive' },
+  snarky:   { id: 'snarky',   nameZh: '毒舌',    nameEn: 'Snarky',   descZh: '嘴巴毒但其实很在乎你，说话直接不废话', descEn: 'Sharp tongue but secretly cares, blunt and direct' },
+  chill:    { id: 'chill',    nameZh: '佛系',    nameEn: 'Chill',    descZh: '随缘、淡定、偶尔冒出哲学金句', descEn: 'Laid back, calm, occasionally drops philosophical wisdom' },
 };
+
+/**
+ * Get archetype metadata for UI display.
+ * @param {string} archetype
+ * @returns {{ id: string, nameZh: string, nameEn: string, descZh: string, descEn: string }}
+ */
+function getArchetypeInfo(archetype) {
+  return ARCHETYPE_INFO[archetype] || ARCHETYPE_INFO.playful;
+}
 
 // ---------------------------------------------------------------------------
 // Drives — things the pet wants (creates proactive behavior)
@@ -293,7 +203,8 @@ function detectSignals(message) {
 }
 
 export default {
-  ARCHETYPES,
+  loadSoulFile,
+  getArchetypeInfo,
   QUESTION_POOL,
   pickQuestion,
   computeDrives,

@@ -33,6 +33,8 @@ npm start              # starts on :23456
 | GET | /proactive | Heartbeat — pet decides to speak |
 | GET | /health | Status, token usage, mood, trust |
 | GET | /chat/history | Full conversation history (JSONL) |
+| POST | /onboarding/chat | Conversational onboarding (pet learns about user) |
+| POST | /memory/consolidate | Trigger memory consolidation |
 | POST | /diary/generate | Generate diary entry |
 | GET | /diary?date=YYYY-MM-DD | Read diary |
 | GET | /soul | Export soul file |

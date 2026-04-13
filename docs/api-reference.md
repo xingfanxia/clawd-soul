@@ -88,6 +88,36 @@ Full persistent conversation history.
 }
 ```
 
+## Onboarding
+
+### POST /onboarding/chat
+Conversational onboarding — the pet learns about the user through natural conversation.
+
+```json
+// Request
+{
+  "message": "我叫小夏，我是程序员",  // null for first message (pet initiates)
+  "history": [                        // full conversation history (client-maintained)
+    { "role": "assistant", "content": "嗨！..." },
+    { "role": "user", "content": "我叫小夏" }
+  ]
+}
+
+// Response (conversation continues)
+{ "ok": true, "reply": "小夏你好！...", "done": false }
+
+// Response (onboarding complete)
+{
+  "ok": true,
+  "reply": "选curious因为...",
+  "done": true,
+  "archetype": "curious",
+  "userName": "小夏",
+  "petName": "小肥",
+  "facts": ["主人叫小夏", "主人是程序员", ...]
+}
+```
+
 ## Diary
 
 ### POST /diary/generate
@@ -112,6 +142,16 @@ Set personality archetype. Valid: `playful`, `curious`, `caring`, `snarky`, `chi
 
 ```json
 { "archetype": "snarky" }
+```
+
+## Memory & Soul
+
+### POST /memory/consolidate
+Trigger nightly memory consolidation ("dreaming") manually. Reviews today's episodes and promotes top 3-5 facts to long-term memory.
+
+```json
+// Response
+{ "ok": true, "promoted": 5 }
 ```
 
 ## Config
