@@ -157,7 +157,7 @@ async function reactToScreen({ screenshot, foregroundApp, windowTitle }) {
   ]});
 
   try {
-    const reply = await provider.chat(messages, { purpose: 'chat', maxTokens: 150, temperature: 0.9 });
+    const reply = await provider.chat(messages, { purpose: 'chat', maxTokens: 80, temperature: 0.9 });
     session.addAssistant(reply);
     session.addObservation(`${foregroundApp}: ${windowTitle}`);
     soul.recordInteraction('observation');
@@ -205,17 +205,19 @@ async function heartbeat() {
     }
   }
 
-  // Let AI decide
+  // Let AI decide — feed last screen summary + recent observations for richer context
   const ctx = buildContext(null);
+  const recentObs = session.getRecentObservationSummaries(5);
+  const recallQuery = [_lastScreenSummary, ...recentObs].filter(Boolean).join(' ');
   ctx.activeMemories = await activeMemory.recall(
-    session.getRecentObservationSummaries(3).join(' '),
+    recallQuery || 'general',
     { language: ctx.language },
   );
 
   const messages = promptEngine.buildMessages('heartbeat', ctx, session);
 
   try {
-    const reply = await provider.chat(messages, { purpose: 'chat', maxTokens: 200, temperature: 0.95 });
+    const reply = await provider.chat(messages, { purpose: 'chat', maxTokens: 150, temperature: 0.95 });
     if (reply && !reply.includes('[沉默]') && !reply.includes('[silent]') && reply.trim().length > 0) {
       session.addAssistant(reply);
       return { commentary: reply, action: 'speech-bubble' };
