@@ -23,7 +23,7 @@ const DEFAULTS = {
   azureOpenaiKey: '',
   azureOpenaiEndpoint: '',
   azureOpenaiApiVersion: '2024-12-01-preview',
-  azureOpenaiDeploymentObserve: 'gpt-5.4-nano-standard',
+  azureOpenaiDeploymentObserve: 'gpt-5.4-mini-standard',
   azureOpenaiDeploymentChat: 'gpt-5.4-mini-standard',
   azureOpenaiDeploymentReason: 'gpt-5.4-standard',
 
