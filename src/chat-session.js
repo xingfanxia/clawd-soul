@@ -15,10 +15,23 @@ import provider from './provider.js';
 const HISTORY_FILE = () => path.join(config.DATA_DIR, 'chat-history.jsonl');
 const SUMMARY_FILE = () => path.join(config.DATA_DIR, 'chat-summary.json');
 
-// Token budget — gpt-5.4-mini has large context, compact at ~100k chars (~50k tokens)
-// to leave room for system prompt + response
-const COMPACT_THRESHOLD_CHARS = 100000;
-const KEEP_RECENT_MESSAGES = 30;  // keep last 30 messages intact after compaction
+// ---------------------------------------------------------------------------
+// Token management
+//
+// gpt-5.4-mini has a large context window. We target ~500k tokens for
+// compaction. Approximation: 1 Chinese char ≈ 1.5 tokens, 1 English char ≈ 0.3 tokens.
+// Conservative estimate: 1 char ≈ 1 token for mixed content.
+//
+// Cache hit strategy: keep the system prompt + summary STABLE at the top
+// of the message array. Azure/OpenAI cache input prefix — if the first N
+// tokens are identical between calls, they get a cache hit (cheaper + faster).
+// So: [system prompt (stable)] + [summary (stable)] + [history (grows)] + [new msg]
+// The stable prefix maximizes cache hits.
+// ---------------------------------------------------------------------------
+const TOKEN_LIMIT = 500000;           // compact at 500k tokens
+const CHARS_PER_TOKEN = 1;            // conservative: 1 char ≈ 1 token
+const COMPACT_THRESHOLD_CHARS = TOKEN_LIMIT * CHARS_PER_TOKEN;
+const KEEP_RECENT_MESSAGES = 50;      // keep last 50 messages intact after compaction
 
 // ---------------------------------------------------------------------------
 // In-memory state (loaded from disk on init)
@@ -120,12 +133,35 @@ function addEvent(content) {
  * @param {string} systemPrompt - the character/personality prompt
  * @returns {Array} [{role, content}] ready for provider.chat()
  */
+/**
+ * Get the conversation messages formatted for an AI chat completion call.
+ *
+ * CACHE HIT STRATEGY:
+ * Azure/OpenAI caches the input prefix. If the first N tokens of two
+ * consecutive calls are identical, the cached portion is cheaper and faster.
+ *
+ * Message order optimized for cache hits:
+ * 1. [STABLE] System prompt — same across all calls within a session
+ * 2. [STABLE] Compacted summary — only changes on compaction (rare)
+ * 3. [STABLE] Older messages — these don't change between calls
+ * 4. [NEW] Most recent messages — only the tail grows
+ *
+ * This means the stable prefix (system + summary + older history) gets
+ * cached across rapid back-and-forth chat exchanges.
+ *
+ * @param {string} systemPrompt - the character/personality prompt
+ * @returns {Array} [{role, content}] ready for provider.chat()
+ */
 function getMessagesForAI(systemPrompt) {
   if (!_loaded) load();
 
-  const messages = [{ role: 'system', content: systemPrompt }];
+  const messages = [];
 
-  // Add compacted summary as context
+  // [STABLE PREFIX — cached across calls]
+  // 1. System prompt (identical every call within a session)
+  messages.push({ role: 'system', content: systemPrompt });
+
+  // 2. Compacted summary (only changes on compaction — rare)
   if (_summary && _summary.text) {
     messages.push({
       role: 'system',
@@ -133,18 +169,42 @@ function getMessagesForAI(systemPrompt) {
     });
   }
 
-  // Add conversation history (user + assistant only, skip system/observations for AI)
-  // But include recent observations as context
+  // [GROWING TAIL — new content appended here]
+  // 3. Conversation history
+  // Bundle consecutive observations into a single system message to reduce
+  // message count (fewer messages = more cache-friendly prefix)
+  let pendingObs = [];
+
   for (const msg of _messages) {
+    if (msg.type === 'observation') {
+      pendingObs.push(msg.content);
+      continue;
+    }
+
+    // Flush accumulated observations as one system message
+    if (pendingObs.length > 0) {
+      messages.push({ role: 'system', content: pendingObs.join('\n') });
+      pendingObs = [];
+    }
+
     if (msg.role === 'user' || msg.role === 'assistant') {
       messages.push({ role: msg.role, content: msg.content });
-    } else if (msg.type === 'observation') {
-      // Include recent observations as system context
+    } else if (msg.type === 'event') {
       messages.push({ role: 'system', content: msg.content });
     }
   }
 
+  // Flush any remaining observations
+  if (pendingObs.length > 0) {
+    messages.push({ role: 'system', content: pendingObs.join('\n') });
+  }
+
   return messages;
+}
+
+/** Estimate current token usage */
+function estimateTokens() {
+  return Math.ceil(estimateChars() / CHARS_PER_TOKEN);
 }
 
 /**
@@ -247,5 +307,6 @@ function clear() {
 export default {
   load, append, addUser, addAssistant, addObservation, addEvent,
   getMessagesForAI, getHistory,
-  needsCompaction, compact, estimateChars, clear,
+  needsCompaction, compact, estimateChars, estimateTokens, clear,
+  TOKEN_LIMIT,
 };
