@@ -153,6 +153,72 @@ async function observe({ screenshot, foregroundApp, windowTitle, trigger }) {
 }
 
 // ---------------------------------------------------------------------------
+// React to screen — user clicked the pet, read screen + respond in ONE call
+//
+// Unlike silent observations, this sends the screenshot directly to the AI
+// along with the full conversation context, and asks for a friend-like
+// reaction. The AI sees EXACTLY what the user sees.
+// ---------------------------------------------------------------------------
+async function reactToScreen({ screenshot, foregroundApp, windowTitle }) {
+  if (!config.hasApiKey()) {
+    return { ok: false, error: 'No API key configured' };
+  }
+
+  engine.tickMoodDecay();
+  const ctx = engine.getPersonalityContext();
+  const isZh = ctx.language === 'zh';
+
+  // Build system prompt — the pet's character + conversation history
+  const systemPrompt = prompts.chat({
+    ...ctx,
+    recentObservations: [],
+    dailyContext: '',
+  });
+
+  // Get conversation context from session
+  const messages = session.getMessagesForAI(systemPrompt);
+
+  // Add the screenshot as the user's "turn" — the pet sees the screen
+  const screenContent = [
+    { type: 'text', text: isZh
+      ? `[主人点了你一下，想让你看看屏幕说点什么]\n当前应用: ${foregroundApp || '未知'}\n窗口标题: ${windowTitle || '未知'}\n\n像朋友一样对你看到的内容发表反应。如果你看到视频、文章、网页——对内容本身感兴趣，问问题、发表看法、吐槽。不要说"慢慢来"之类的废话。`
+      : `[Owner clicked you — they want you to look at the screen and react]\nApp: ${foregroundApp || 'unknown'}\nWindow: ${windowTitle || 'unknown'}\n\nReact to what you see like a friend would. If you see a video, article, webpage — be curious about the CONTENT. Ask questions, share opinions. Don't say generic encouragement.`,
+    },
+  ];
+
+  if (screenshot) {
+    screenContent.push({
+      type: 'image_url',
+      image_url: { url: `data:image/jpeg;base64,${screenshot}`, detail: 'auto' },
+    });
+  }
+
+  messages.push({ role: 'user', content: screenContent });
+
+  try {
+    const reply = await provider.chat(messages, {
+      purpose: 'chat',
+      maxTokens: 300,
+      temperature: 0.9,
+    });
+
+    // Add to session as assistant message
+    session.addAssistant(reply);
+
+    // Also add the observation to session context
+    session.addObservation(`${foregroundApp}: ${windowTitle}`);
+
+    soul.recordInteraction('observation');
+    engine.applyEvent('observation-interesting');
+
+    return { ok: true, reply, mood: { ...soul.get().mood } };
+  } catch (err) {
+    console.error('[observer] reactToScreen failed:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Heartbeat — the pet's "inner voice" that decides to speak or not
 //
 // Called every ~30 min. Reviews accumulated context (observations, time,
@@ -295,4 +361,4 @@ function getLastScreenSummary() {
   return _lastScreenSummary;
 }
 
-export default { init, observe, heartbeat, chat, getChatHistory, getLastScreenSummary };
+export default { init, observe, reactToScreen, heartbeat, chat, getChatHistory, getLastScreenSummary };

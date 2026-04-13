@@ -86,6 +86,17 @@ routes['POST /chat'] = async (req, res) => {
   json(res, result);
 };
 
+// POST /react — user clicked pet, read screen + respond as friend (screenshot included)
+routes['POST /react'] = async (req, res) => {
+  const body = await readBody(req);
+  const result = await observer.reactToScreen({
+    screenshot: body?.screenshot,
+    foregroundApp: body?.foregroundApp,
+    windowTitle: body?.windowTitle,
+  });
+  json(res, result);
+};
+
 // GET /proactive — heartbeat: pet decides if it wants to say something
 routes['GET /proactive'] = async (_req, res) => {
   const result = await observer.heartbeat();
