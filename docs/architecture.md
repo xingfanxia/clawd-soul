@@ -32,11 +32,12 @@ clawd-on-desk (Electron)              clawd-soul (HTTP :23456)
 | `chat-session.js` | Persistent JSONL, pre-compaction memory flush, cache optimization |
 | `memory.js` | SQLite + FTS5 + sqlite-vec, hybrid search, autoRecall with temporal decay + MMR |
 | `personality.js` | Loads soul files, trait evolution, drives, signal detection |
-| `prompt-engine.js` | 8-layer prompt assembly, cache-optimized, per-turn adaptive |
+| `prompt-engine.js` | 9-layer prompt assembly (v0.0.4: Layer 0 inner state), cache-optimized |
+| `inner-life.js` | **v0.0.4**: generates pet's daily mood/thoughts/interests/dreams |
 | `active-memory.js` | Auto-recall: search memory before every reply, extract personal facts |
-| `souls/*.md` | 5 archetype character files (playful, curious, caring, snarky, chill) |
+| `souls/*.md` | 5 archetype character files (rewritten v0.0.4 as character-at-rest) |
 | `engine.js` | Mood decay, trust, proactiveness, nightly memory consolidation |
-| `soul-file.js` | Soul v3: longTermMemory, consolidation tracking |
+| `soul-file.js` | Soul v4: innerLife, longTermMemory, consolidation tracking |
 | `diary.js` | Daily diary generation at 23:00, context gathering |
 
 ## Data Flow

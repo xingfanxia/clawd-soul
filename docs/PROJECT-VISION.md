@@ -181,6 +181,8 @@ The pet chooses its own personality archetype based on what it learns about you.
 
 8. **"Away Detection, Mood Animations, and Making a Pet Feel Alive"** — Screenshot hashing for away detection. Mood-driven idle animations. The heartbeat system. Trust growth over time. Personality evolution based on interaction signals.
 
+9. **"治标 vs 治本: Why I Wrote a Boring Pet Before Writing an Interesting One"** — The v0.0.4 reset story. How v0.0.2-v0.0.3 built a sophisticated but boring pet. How analyzing 200 pet messages revealed 86% were 4 rotating templates. How the fix wasn't brevity/verbosity/anti-repetition — it was giving the pet an inner life. Why "8 layers about the user" produces surveillance-with-warm-framing, and why Layer 0 (own state) is the difference between persona and character. Includes the MTC-style self-reflection that caught the root cause.
+
 ---
 
 ## Roadmap
@@ -191,12 +193,27 @@ Everything works end-to-end. Screen reading, chat, diary, multi-device.
 ### v0.0.2 (Shipped 2026-04-13) — Soul Engine Rewrite
 Quality leap. SOUL.md files, 8-layer prompts, active memory, conversational onboarding, away detection, memory consolidation.
 
-### v0.0.3 (Next) — Polish & Expressiveness
-- More expressive animations tied to mood/emotion states
-- Chat window UX polish
-- pHash for smarter screenshot diffing
-- Voice synthesis (pet can talk, not just text)
-- Better prompt tuning for gpt-5.4 verbosity
+### v0.0.3 (Shipped 2026-04-13) — Response brevity + away detection
+Brevity controls (char limits, maxTokens, reasoning_effort=minimal). pHash perceptual hash for away detection (vs brittle MD5). Chat window UX polish (smart scroll, date separators).
+
+### v0.0.4 (Shipped 2026-04-15) — Inner Life Engine **(root-cause fix)**
+After v0.0.3, the pet was still boring. The insight: **all 8 prompt layers were about the user**. Every response substrate was `{screen, mood-toward-user, memory-of-user}` — so the model had nowhere to go but "describe screen + caretaker nudge". History analysis showed 86% template repetition (40x "拉拉你的袖子").
+
+**Fix**: Added Layer 0 — pet's own daily mood, thoughts, interests, worries, and dreams, regenerated fresh each day. Has NOTHING to do with the user:
+
+> Mood: "有点迷糊又有点想乱动，像壳里卡着一小串咕噜咕噜的泡泡"
+> Thoughts: ["角落里那颗小灰点到底是石头、食物，还是昨天没想完的东西"...]
+> Dream: "梦见自己爬进一只空贝壳, 里面装满会叮一下就消失的银色小月亮"
+
+Also: SOUL.md rewrites (character-at-rest, not attitude-toward-user), default-silent heartbeat (93% silence vs v0.0.3's 5%), heartbeat messages excluded from AI context so they don't pollute conversation.
+
+Measured: 14%→100% unique openings, 0%→100% own-state references. Pet became a character instead of a surveillance assistant. See [SELF-REFLECTION-v0.0.4.md](SELF-REFLECTION-v0.0.4.md).
+
+### v0.0.5 (Next) — Polish & Expressiveness
+- Mid-day inner life refresh (not just daily regen)
+- Voice synthesis (pet speaks, not just text)
+- More expressive animations tied to mood states
+- Fine-tune inner life generator for more archetype variety
 
 ### v0.1.0 — Multi-Platform
 - iOS companion app
