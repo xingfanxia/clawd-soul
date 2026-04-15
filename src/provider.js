@@ -42,18 +42,26 @@ function request(url, options, body) {
 // ---------------------------------------------------------------------------
 // Azure OpenAI
 // ---------------------------------------------------------------------------
-async function azureOpenaiChat(messages, { deployment, maxTokens = 300, temperature = 0.7, jsonMode = false } = {}) {
+async function azureOpenaiChat(messages, { deployment, maxTokens = 300, temperature, jsonMode = false, reasoningEffort } = {}) {
   const cfg = config.get();
   const dep = deployment || cfg.azureOpenaiDeploymentChat;
   const endpoint = cfg.azureOpenaiEndpoint.replace(/\/$/, '');
   const url = `${endpoint}/openai/deployments/${dep}/chat/completions?api-version=${cfg.azureOpenaiApiVersion}`;
 
+  // gpt-5-family mini models reject custom temperature (only accept default 1).
+  // Caller may pass temperature for full models. Drop it if targeting mini.
+  const isMiniModel = /mini/i.test(dep);
+  const safeTemp = isMiniModel ? undefined : (temperature !== undefined ? temperature : 0.7);
+
   const body = {
     messages,
     max_completion_tokens: maxTokens,
-    temperature,
   };
+  if (safeTemp !== undefined) body.temperature = safeTemp;
   if (jsonMode) body.response_format = { type: 'json_object' };
+  // gpt-5 family supports reasoning_effort: 'minimal' | 'low' | 'medium' | 'high'
+  // 'minimal' = skip extended reasoning, fast/short responses (best for react/observe)
+  if (reasoningEffort) body.reasoning_effort = reasoningEffort;
 
   const res = await request(url, {
     headers: { 'api-key': cfg.azureOpenaiKey },
@@ -63,7 +71,14 @@ async function azureOpenaiChat(messages, { deployment, maxTokens = 300, temperat
   if (res.status !== 200) {
     throw new Error(`Azure OpenAI ${res.status}: ${JSON.stringify(res.data)}`);
   }
-  return { text: res.data.choices[0].message.content, usage: res.data.usage || null };
+  const choice = res.data.choices[0];
+  const text = choice.message.content || '';
+  const finishReason = choice.finish_reason;
+  // Warn if response was truncated by token limit (common with gpt-5 reasoning models)
+  if (!text && finishReason === 'length') {
+    console.warn(`[provider] empty reply, finish_reason=length, usage=${JSON.stringify(res.data.usage)}`);
+  }
+  return { text, usage: res.data.usage || null, finishReason };
 }
 
 // ---------------------------------------------------------------------------
@@ -259,9 +274,10 @@ async function chat(messages, opts = {}) {
     case 'azure-openai': {
       const deploymentMap = {
         observe: cfg.azureOpenaiDeploymentObserve,
-        chat: cfg.azureOpenaiDeploymentChat,
-        diary: cfg.azureOpenaiDeploymentChat,
-        reason: cfg.azureOpenaiDeploymentReason,
+        react:   cfg.azureOpenaiDeploymentObserve,  // react uses mini — naturally brief
+        chat:    cfg.azureOpenaiDeploymentChat,
+        diary:   cfg.azureOpenaiDeploymentChat,
+        reason:  cfg.azureOpenaiDeploymentReason,
       };
       result = await azureOpenaiChat(messages, {
         deployment: deploymentMap[purpose] || cfg.azureOpenaiDeploymentChat,
@@ -272,8 +288,9 @@ async function chat(messages, opts = {}) {
     case 'openai': {
       const modelMap = {
         observe: cfg.openaiModelObserve,
-        chat: cfg.openaiModelChat,
-        diary: cfg.openaiModelChat,
+        react:   cfg.openaiModelObserve,
+        chat:    cfg.openaiModelChat,
+        diary:   cfg.openaiModelChat,
       };
       result = await openaiChat(messages, {
         model: modelMap[purpose] || cfg.openaiModelChat,
@@ -284,8 +301,9 @@ async function chat(messages, opts = {}) {
     case 'gemini': {
       const modelMap = {
         observe: cfg.geminiModelObserve,
-        chat: cfg.geminiModelChat,
-        diary: cfg.geminiModelChat,
+        react:   cfg.geminiModelObserve,
+        chat:    cfg.geminiModelChat,
+        diary:   cfg.geminiModelChat,
       };
       result = await geminiChat(messages, {
         model: modelMap[purpose] || cfg.geminiModelChat,

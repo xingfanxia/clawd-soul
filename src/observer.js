@@ -7,6 +7,7 @@ import personality from './personality.js';
 import session from './chat-session.js';
 import promptEngine from './prompt-engine.js';
 import activeMemory from './active-memory.js';
+import innerLife from './inner-life.js';
 
 // ---------------------------------------------------------------------------
 // Rate limiting
@@ -46,6 +47,7 @@ function buildContext(foregroundApp) {
   const s = soul.get();
   return {
     ...pCtx,
+    innerLife: s.innerLife,                    // v0.0.4: pet's own state (Layer 0)
     longTermMemory: s.longTermMemory || [],
     activeMemories: null, // set per-method after recall()
     recentObservations: session.getRecentObservationSummaries(5),
@@ -63,6 +65,14 @@ function buildContext(foregroundApp) {
 function init() {
   session.load();
   console.log(`[observer] chat session loaded: ${session.getHistory().messages.length} messages`);
+
+  // v0.0.4: ensure pet has today's inner life (regen if stale)
+  // Fire-and-forget — don't block startup on this
+  innerLife.ensureFresh().then((il) => {
+    if (il) console.log(`[observer] inner life ready: ${il.currentMood}`);
+  }).catch((err) => {
+    console.warn('[observer] inner life init failed:', err.message);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +167,21 @@ async function reactToScreen({ screenshot, foregroundApp, windowTitle }) {
   ]});
 
   try {
-    const reply = await provider.chat(messages, { purpose: 'chat', maxTokens: 80, temperature: 0.9 });
+    // gpt-5 family: reasoningEffort='minimal' skips extended reasoning
+    // so all 120 tokens go to visible output instead of being eaten by reasoning
+    let reply = await provider.chat(messages, {
+      purpose: 'react',
+      maxTokens: 120,
+      // gpt-5.4-mini only supports default temperature, so we omit it here
+      reasoningEffort: 'minimal',
+    });
+    // Fallback: if model returned empty (token budget exhausted by reasoning),
+    // give a brief default reaction so the bubble isn't blank
+    if (!reply || !reply.trim()) {
+      const isZh = ctx.language === 'zh';
+      reply = isZh ? '*歪头看你*' : '*tilts head*';
+      console.warn('[observer] react returned empty, using fallback');
+    }
     session.addAssistant(reply);
     session.addObservation(`${foregroundApp}: ${windowTitle}`);
     soul.recordInteraction('observation');
@@ -169,7 +193,13 @@ async function reactToScreen({ screenshot, foregroundApp, windowTitle }) {
     return { ok: true, reply, mood: { ...soul.get().mood } };
   } catch (err) {
     console.error('[observer] reactToScreen failed:', err.message);
-    return { ok: false, error: err.message };
+    // v0.0.4: graceful fallback — user still sees a reply, pet doesn't look broken
+    const isZh = (buildContext(foregroundApp).language || 'zh') === 'zh';
+    const fallbackReplies = isZh
+      ? ['*歪头看你*', '嗯?', '*眨眨眼*', '哦, 是你。', '*盯了你一眼*']
+      : ['*tilts head*', 'hm?', '*blinks*', 'oh. you.', '*looks up*'];
+    const reply = fallbackReplies[Math.floor(Math.random() * fallbackReplies.length)];
+    return { ok: true, reply, mood: { ...soul.get().mood } };
   }
 }
 
@@ -180,27 +210,35 @@ async function heartbeat() {
   if (!config.hasApiKey()) return null;
 
   engine.tickMoodDecay();
+
+  // v0.0.4: DEFAULT SILENCE — pets spend most time staring at walls.
+  // 75% chance of silent exit BEFORE even calling AI. Combined with
+  // model's own silence bias this should land at ~85% total silence.
+  if (Math.random() < 0.75) return null;
+
   engine.generateProactiveContext();
 
-  // Check proactive messages first
+  // Check proactive messages (engine-generated templates) first
+  // v0.0.4: these are still valuable (break nudges, morning greetings)
+  // but rate-limited by the silence gate above.
   const proactive = engine.getProactiveMessage();
   if (proactive) {
-    session.addAssistant(proactive);
+    session.addHeartbeat(proactive);
     return { commentary: proactive, action: 'speech-bubble' };
   }
 
-  // Check drives
+  // Check drives — but only fire the question pool occasionally
   const s = soul.get();
   const cfg = config.get();
   const lastChat = s.stats.lastChatTime ? new Date(s.stats.lastChatTime).getTime() : 0;
   const hoursSinceChat = (Date.now() - lastChat) / 3600000;
 
-  if (hoursSinceChat > 1.5 && Math.random() < 0.4) {
+  if (hoursSinceChat > 2.5 && Math.random() < 0.2) {  // v0.0.4: less aggressive (2.5h vs 1.5h, 20% vs 40%)
     const question = personality.pickQuestion(cfg.language || 'zh', s.askedQuestions || []);
     if (question) {
       s.askedQuestions = [...(s.askedQuestions || []), question];
       soul.save();
-      session.addAssistant(question);
+      session.addHeartbeat(question);
       return { commentary: question, action: 'speech-bubble' };
     }
   }
@@ -213,13 +251,25 @@ async function heartbeat() {
     recallQuery || 'general',
     { language: ctx.language },
   );
+  // v0.0.4: anti-repetition for heartbeat includes recent heartbeat messages,
+  // since they're excluded from main AI context but we still need to avoid loops
+  ctx.recentPetMessages = [
+    ...session.getRecentHeartbeatMessages(5),
+    ...session.getRecentAssistantMessages(3),
+  ].slice(-8);
 
   const messages = promptEngine.buildMessages('heartbeat', ctx, session);
 
   try {
-    const reply = await provider.chat(messages, { purpose: 'chat', maxTokens: 150, temperature: 0.95 });
+    // v0.0.4: heartbeat uses same cheap/brief mini model as react.
+    // gpt-5.4-mini doesn't accept custom temperature, so omit it.
+    const reply = await provider.chat(messages, {
+      purpose: 'react',
+      maxTokens: 80,
+      reasoningEffort: 'minimal',
+    });
     if (reply && !reply.includes('[沉默]') && !reply.includes('[silent]') && reply.trim().length > 0) {
-      session.addAssistant(reply);
+      session.addHeartbeat(reply);
       return { commentary: reply, action: 'speech-bubble' };
     }
   } catch {}

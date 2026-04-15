@@ -8,6 +8,7 @@ import memory from './memory.js';
 import observer from './observer.js';
 import diary from './diary.js';
 import provider from './provider.js';
+import innerLife from './inner-life.js';
 
 // ---------------------------------------------------------------------------
 // Load .env file (simple parser, no dependency)
@@ -187,6 +188,29 @@ routes['GET /memory/search'] = async (req, res) => {
 // GET /soul — export soul file
 routes['GET /soul'] = async (_req, res) => {
   json(res, { ok: true, soul: soul.exportSoul() });
+};
+
+// GET /inner-life — read pet's current inner state
+routes['GET /inner-life'] = async (_req, res) => {
+  const s = soul.get();
+  json(res, { ok: true, innerLife: s.innerLife, stale: soul.isInnerLifeStale() });
+};
+
+// POST /inner-life/regen — manually regenerate today's inner life
+routes['POST /inner-life/regen'] = async (_req, res) => {
+  try {
+    const cfg = config.get();
+    const s = soul.get();
+    const language = cfg.language || 'zh';
+    const archetype = s.archetype || 'playful';
+    const petName = cfg.petName || s.name || 'Clawd';
+    const fresh = await innerLife.generate(archetype, petName, s.innerLife, language);
+    soul.setInnerLife(fresh);
+    soul.save();
+    json(res, { ok: true, innerLife: fresh });
+  } catch (err) {
+    json(res, { ok: false, error: err.message }, 500);
+  }
 };
 
 // POST /soul/import — import soul file

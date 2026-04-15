@@ -8,7 +8,7 @@ const SOUL_PATH = () => path.join(config.DATA_DIR, 'soul.json');
 // Default soul — a brand-new Clawd
 // ---------------------------------------------------------------------------
 const DEFAULT_SOUL = () => ({
-  version: 3,
+  version: 4,
   name: config.get().petName || 'Clawd',
   createdAt: new Date().toISOString(),
 
@@ -33,6 +33,11 @@ const DEFAULT_SOUL = () => ({
 
   // Timestamp of last memory consolidation
   lastConsolidation: null,
+
+  // Inner Life — pet's own state, unrelated to user (v4+)
+  // Regenerated daily. Gives the model substrate to draw from
+  // instead of just narrating the user's screen.
+  innerLife: null,
 
   // Questions the pet has already asked (for drive system)
   askedQuestions: [],
@@ -69,7 +74,8 @@ function load() {
       // Merge with defaults to pick up any new fields from upgrades
       _soul = { ...DEFAULT_SOUL(), ...raw, mood: { ...DEFAULT_SOUL().mood, ...raw.mood }, stats: { ...DEFAULT_SOUL().stats, ...raw.stats } };
 
-      // --- v1/v2 → v3 migration ---
+      // --- Migrations ---
+      let migrated = false;
       if (_soul.version < 3) {
         // Rename semanticMemory → longTermMemory
         if (Array.isArray(_soul.semanticMemory)) {
@@ -82,8 +88,15 @@ function load() {
         // Ensure new fields exist
         if (_soul.lastConsolidation === undefined) _soul.lastConsolidation = null;
         _soul.version = 3;
-        save();
+        migrated = true;
       }
+      if (_soul.version < 4) {
+        // v3 → v4: add innerLife field
+        if (_soul.innerLife === undefined) _soul.innerLife = null;
+        _soul.version = 4;
+        migrated = true;
+      }
+      if (migrated) save();
     } catch {
       console.error('[soul] corrupt soul.json, creating fresh soul');
       _soul = DEFAULT_SOUL();
@@ -185,8 +198,24 @@ function addSemanticMemory(text) {
   addLongTermMemory(text);
 }
 
+/** Set the pet's inner life (daily regen). Returns the new state. */
+function setInnerLife(innerLife) {
+  const soul = get();
+  soul.innerLife = innerLife;
+  return soul.innerLife;
+}
+
+/** Check if inner life is stale (from a previous day or never generated) */
+function isInnerLifeStale() {
+  const soul = get();
+  if (!soul.innerLife || !soul.innerLife.today) return true;
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  return soul.innerLife.today !== today;
+}
+
 export default {
   load, save, get, exportSoul, importSoul,
   updateMood, setMood, addTrust,
   recordInteraction, addLongTermMemory, addSemanticMemory,
+  setInnerLife, isInnerLifeStale,
 };

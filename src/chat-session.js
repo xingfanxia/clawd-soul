@@ -125,6 +125,17 @@ function addEvent(content) {
   return append('system', content, 'event');
 }
 
+/**
+ * Add a heartbeat message (pet's own thought, proactive speech).
+ * v0.0.4: shown to user in UI BUT excluded from future AI context.
+ * Why: heartbeat messages are pet's monologue. If included in AI context,
+ * they'd pollute the chat and cause the model to fall into template loops
+ * (we saw 40x repetition of the same heartbeat in v0.0.3).
+ */
+function addHeartbeat(content) {
+  return append('assistant', content, 'heartbeat');
+}
+
 // ---------------------------------------------------------------------------
 // Build messages for AI call
 // ---------------------------------------------------------------------------
@@ -182,6 +193,10 @@ function getMessagesForAI(systemPrompt) {
       pendingObs.push(msg.content);
       continue;
     }
+
+    // v0.0.4: skip heartbeat messages — pet's monologue, not conversation.
+    // Including them would cause template repetition (saw 40x "你又打开X了").
+    if (msg.type === 'heartbeat') continue;
 
     // Flush accumulated observations as one system message
     if (pendingObs.length > 0) {
@@ -367,7 +382,21 @@ function clear() {
 function getRecentAssistantMessages(limit = 3) {
   if (!_loaded) load();
   return _messages
-    .filter(m => m.role === 'assistant')
+    .filter(m => m.role === 'assistant' && m.type !== 'heartbeat')
+    .slice(-limit)
+    .map(m => m.content);
+}
+
+/**
+ * Get the last N heartbeat messages (for anti-repetition OF heartbeat patterns).
+ * v0.0.4: heartbeats excluded from AI context, but we DO want the model to
+ * avoid repeating itself across heartbeats. So we show recent heartbeats in
+ * the anti-repetition layer when building a heartbeat prompt.
+ */
+function getRecentHeartbeatMessages(limit = 5) {
+  if (!_loaded) load();
+  return _messages
+    .filter(m => m.type === 'heartbeat')
     .slice(-limit)
     .map(m => m.content);
 }
@@ -386,9 +415,9 @@ function getRecentObservationSummaries(limit = 5) {
 }
 
 export default {
-  load, append, addUser, addAssistant, addObservation, addEvent,
+  load, append, addUser, addAssistant, addObservation, addEvent, addHeartbeat,
   getMessagesForAI, getHistory,
   needsCompaction, compact, estimateChars, estimateTokens, clear,
-  getRecentAssistantMessages, getRecentObservationSummaries,
+  getRecentAssistantMessages, getRecentObservationSummaries, getRecentHeartbeatMessages,
   TOKEN_LIMIT,
 };
